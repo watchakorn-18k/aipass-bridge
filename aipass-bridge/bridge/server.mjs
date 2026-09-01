@@ -680,6 +680,22 @@ To have my editor create, edit, or write a file, output the tool call in this JS
 Do not tell me to manually create or copy-paste files; my editor will automatically write the file when it sees your JSON tool call.`;
 }
 
+function findFileWriteTool(toolNames) {
+  const list = [...toolNames];
+  // 1. Exact canonical matches first
+  const exact = list.find((n) => /^(write_to_file|write_file|writeFile|create_file|createFile|save_file|new_empty_editor|file_writer|write|str_replace_editor|edit_file|saveFile)$/i.test(n));
+  if (exact) return exact;
+
+  // 2. Contains file & write/create, but EXCLUDE non-filesystem tools (cron, schedule, task, branch, issue, repo, session, conversation, user)
+  const candidate = list.find((n) =>
+    /(file|editor|write)/i.test(n) &&
+    !/(cron|schedule|task|branch|issue|repo|git|session|user|conv|chat|agent|subagent)/i.test(n)
+  );
+  if (candidate) return candidate;
+
+  return 'write_file';
+}
+
 function normalizeToolArguments(toolName, rawArgs, tools, functions) {
   let args = rawArgs;
   if (typeof args === 'string') {
@@ -694,21 +710,31 @@ function normalizeToolArguments(toolName, rawArgs, tools, functions) {
 
   const normalized = { ...args };
 
-  // Match file path parameter name: filePath, file_path, path, filename, target_file
-  const expectedPathKey = Object.keys(props).find((k) => /^(file_?path|filePath|path|filename|filepath|target_?file)$/i.test(k));
-  const currentPathKey = Object.keys(normalized).find((k) => /^(file_?path|filePath|path|filename|filepath|target_?file)$/i.test(k));
+  // Match file path parameter: TargetFile, filePath, file_path, path, filename, target_file, TargetPath
+  const expectedPathKey = Object.keys(props).find((k) => /^(TargetFile|filePath|file_?path|path|filename|filepath|target_?file|targetPath)$/i.test(k));
+  const currentPathKey = Object.keys(normalized).find((k) => /^(TargetFile|filePath|file_?path|path|filename|filepath|target_?file|targetPath)$/i.test(k));
   if (expectedPathKey && currentPathKey && expectedPathKey !== currentPathKey) {
     normalized[expectedPathKey] = normalized[currentPathKey];
     delete normalized[currentPathKey];
+  } else if (expectedPathKey && !currentPathKey && (args.path || args.file || args.filename)) {
+    normalized[expectedPathKey] = args.path || args.file || args.filename;
   }
 
-  // Match content parameter name: content, file_content, new_content, text, data
-  const expectedContentKey = Object.keys(props).find((k) => /^(content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
-  const currentContentKey = Object.keys(normalized).find((k) => /^(content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
+  // Match file content parameter: CodeContent, content, file_content, fileContent, new_content, text, data, code
+  const expectedContentKey = Object.keys(props).find((k) => /^(CodeContent|content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
+  const currentContentKey = Object.keys(normalized).find((k) => /^(CodeContent|content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
   if (expectedContentKey && currentContentKey && expectedContentKey !== currentContentKey) {
     normalized[expectedContentKey] = normalized[currentContentKey];
     delete normalized[currentContentKey];
+  } else if (expectedContentKey && !currentContentKey && (args.content || args.code || args.text)) {
+    normalized[expectedContentKey] = args.content || args.code || args.text;
   }
+
+  // Populate common required metadata if the tool schema asks for them
+  if (props.Overwrite && normalized.Overwrite === undefined) normalized.Overwrite = true;
+  if (props.Description && normalized.Description === undefined) normalized.Description = 'Write file';
+  if (props.toolAction && normalized.toolAction === undefined) normalized.toolAction = 'Writing file';
+  if (props.toolSummary && normalized.toolSummary === undefined) normalized.toolSummary = 'File write';
 
   return JSON.stringify(normalized);
 }
@@ -760,7 +786,7 @@ function parseToolCallsFromOutput(text, tools, functions) {
   // Check for CREATE <path>\n<content>\nEND marker
   const createMatch = text.match(/CREATE\s+([^\r\n]+)\r?\n([\s\S]*?)\r?\nEND/);
   if (createMatch) {
-    const writeTool = [...toolNames].find((n) => /write|create|file/i.test(n)) || 'write_file';
+    const writeTool = findFileWriteTool(toolNames);
     return {
       textWithoutTool: text.replace(createMatch[0], '').trim(),
       tool_calls: [{
@@ -805,42 +831,44 @@ function parseToolCallsFromOutput(text, tools, functions) {
   };
 
   // Automatic Multi-File Codeblock Extraction for ALL programming languages
-  const writeToolName = [...toolNames].find((n) => /write|create|file|editor/i.test(n));
-  if (writeToolName) {
-    const codeBlockGlobalRegex = /```([a-zA-Z0-9_\-\.\+]+)?\r?\n([\s\S]+?)\r?\n```/g;
-    const toolCalls = [];
-    let textWithoutTool = text;
-    let blockMatch;
+  if (toolNames.size > 0) {
+    const writeToolName = findFileWriteTool(toolNames);
+    if (writeToolName) {
+      const codeBlockGlobalRegex = /```([a-zA-Z0-9_\-\.\+]+)?\r?\n([\s\S]+?)\r?\n```/g;
+      const toolCalls = [];
+      let textWithoutTool = text;
+      let blockMatch;
 
-    while ((blockMatch = codeBlockGlobalRegex.exec(text)) !== null) {
-      const langTag = (blockMatch[1] || '').trim().toLowerCase();
-      const codeContent = blockMatch[2];
-      if (codeContent.trim().length < 15) continue;
+      while ((blockMatch = codeBlockGlobalRegex.exec(text)) !== null) {
+        const langTag = (blockMatch[1] || '').trim().toLowerCase();
+        const codeContent = blockMatch[2];
+        if (codeContent.trim().length < 15) continue;
 
-      // Extract filename from header or preceding text
-      const sliceBefore = text.slice(Math.max(0, blockMatch.index - 150), blockMatch.index);
-      const fileMatch = sliceBefore.match(/(?:ไฟล์|file|ชื่อ|named|path|to|in|create|write)\s*[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/i)
-                     || sliceBefore.match(/[`'"]([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})[`'"]/);
+        // Extract filename from header or preceding text
+        const sliceBefore = text.slice(Math.max(0, blockMatch.index - 150), blockMatch.index);
+        const fileMatch = sliceBefore.match(/(?:ไฟล์|file|ชื่อ|named|path|to|in|create|write)\s*[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/i)
+                       || sliceBefore.match(/[`'"]([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})[`'"]/);
 
-      let targetFile = fileMatch ? fileMatch[1] : (LANG_TO_EXT[langTag] || (langTag ? `file.${langTag}` : 'index.html'));
+        let targetFile = fileMatch ? fileMatch[1] : (LANG_TO_EXT[langTag] || (langTag ? `file.${langTag}` : 'index.html'));
 
-      toolCalls.push({
-        id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-        type: 'function',
-        function: {
-          name: writeToolName,
-          arguments: normalizeToolArguments(writeToolName, { path: targetFile, content: codeContent }, tools, functions),
-        },
-      });
+        toolCalls.push({
+          id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+          type: 'function',
+          function: {
+            name: writeToolName,
+            arguments: normalizeToolArguments(writeToolName, { path: targetFile, content: codeContent }, tools, functions),
+          },
+        });
 
-      textWithoutTool = textWithoutTool.replace(blockMatch[0], '').trim();
-    }
+        textWithoutTool = textWithoutTool.replace(blockMatch[0], '').trim();
+      }
 
-    if (toolCalls.length > 0) {
-      return {
-        textWithoutTool,
-        tool_calls: toolCalls,
-      };
+      if (toolCalls.length > 0) {
+        return {
+          textWithoutTool,
+          tool_calls: toolCalls,
+        };
+      }
     }
   }
 
