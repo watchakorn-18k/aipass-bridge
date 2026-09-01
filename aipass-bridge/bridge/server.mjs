@@ -991,12 +991,22 @@ function preprocessPromptText(text, messages = []) {
   // 1. Check if the intent is explicit Summarization / Page Analysis / Explanation
   const isSummarizeIntent = /(?:สรุป|summarize|summary|tl;?dr|analyze\s+this\s+page|Stop-Slop|extract\s+code)/i.test(text);
   if (isSummarizeIntent) {
+    const isEn = /Target Output Language:\s*English/i.test(text);
+    const isJa = /Target Output Language:\s*日本語/i.test(text);
+    const isZh = /Target Output Language:\s*简体中文/i.test(text);
+
+    let langInstruction = 'ภาษาไทย (Thai Language) เท่านั้น ทั้งหัวข้อและเนื้อหา';
+    if (isEn) langInstruction = 'English Language';
+    else if (isJa) langInstruction = 'Japanese Language (日本語)';
+    else if (isZh) langInstruction = 'Simplified Chinese (简体中文)';
+
     return `${text}
 
 [System Directive: Stop-Slop Anti-AI Prose Guidelines]:
-1. NO throat-clearing openers (Never say "สรุปข้อมูลจาก...", "Here is the summary:", "In summary:"). Start immediately with the core factual points.
-2. NO conversational padding, filler, or follow-up sign-off questions (Never say "คุณต้องการให้ช่วยอะไรเพิ่มเติมไหมครับ?").
-3. Use active voice, crisp Markdown structure, and specific details (exact numbers, names, dates, requirements).`;
+1. LANGUAGE: Output the ENTIRE summary in ${langInstruction}.
+2. NO throat-clearing openers (Never say "สรุปข้อมูลจาก...", "Here is the summary:", "In summary:"). Start immediately with the core factual points.
+3. NO conversational padding, filler, or follow-up sign-off questions (Never say "คุณต้องการให้ช่วยอะไรเพิ่มเติมไหมครับ?").
+4. Use active voice, crisp Markdown structure, and specific details (exact numbers, names, dates, requirements).`;
   }
 
   // 2. Check if the prompt is truly a raw git diff or an explicit command to generate a commit message

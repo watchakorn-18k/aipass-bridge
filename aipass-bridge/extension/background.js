@@ -283,12 +283,21 @@ Provide a high-impact, direct summary of the following content in ${targetLangNa
 
     // 4. Stream from Bridge
     const bUrl = await bridgeUrl();
+    const finalPrompt = `${promptPrefix}
+
+"""
+${targetText}
+"""
+
+[CRITICAL REQUIREMENT - OUTPUT LANGUAGE]:
+Write the entire output exclusively in ${targetLangName}. All headings, bullet points, explanations, and descriptions MUST be in ${targetLangName}. Do NOT output in English or another language (only keep code snippets, URLs, and proper nouns in their original form).`;
+
     const res = await fetch(`${bUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'gemini-3.1-flash-lite',
-        messages: [{ role: 'user', content: `${promptPrefix}\n\n"""\n${targetText}\n"""` }],
+        messages: [{ role: 'user', content: finalPrompt }],
         stream: true,
       }),
     });
