@@ -547,18 +547,22 @@ function formatToolsPrompt(tools, functions, tool_choice) {
     parameters: fn.parameters || { type: 'object', properties: {} },
   }, null, 2)).join('\n');
 
-  return `# Tools
-You have access to the following tools to interact with the user's environment:
+  return `CRITICAL SYSTEM DIRECTIVE: You are an autonomous AI coding assistant with FULL tool execution privileges in the user's workspace.
+
+# Available Tools
 ${toolDefs}
 
-When you need to use a tool, respond with a JSON markdown code block:
+# MANDATORY INSTRUCTIONS:
+1. When asked to create, write, edit, or view files, YOU MUST EXECUTE the tool directly using the JSON format below.
+2. NEVER tell the user to manually copy-paste or create files themselves. Call the tool to write it for them.
+3. Respond ONLY with a JSON code block to execute a tool:
 \`\`\`json
 {
-  "name": "tool_name",
+  "name": "<tool_name>",
   "arguments": { ... }
 }
 \`\`\`
-The user's client environment will execute the tool for you and supply the result in the next turn.`;
+The client environment will execute this tool immediately on disk.`;
 }
 
 function parseToolCallsFromOutput(text, tools, functions) {
@@ -633,32 +637,34 @@ function parseToolCallsFromOutput(text, tools, functions) {
 function buildUserPrompt(messages, tools, functions, tool_choice) {
   const toolsPrompt = formatToolsPrompt(tools, functions, tool_choice);
 
+  const parts = [];
+  if (toolsPrompt) parts.push(toolsPrompt);
+
   const systemTexts = (messages ?? [])
     .filter((m) => m.role === 'system')
     .map((m) => (typeof m.content === 'string' ? m.content : (m.content ?? []).map((p) => p.text ?? '').join('')))
     .join('\n\n');
-
-  const toolResults = (messages ?? [])
-    .filter((m) => m.role === 'tool' || m.role === 'function')
-    .map((m) => {
-      const id = m.tool_call_id ? `[Tool ID: ${m.tool_call_id}] ` : '';
-      const name = m.name ? `[Function: ${m.name}] ` : '';
-      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      return `${id}${name}Result: ${content}`;
-    });
-
-  const userTexts = (messages ?? [])
-    .filter((m) => m.role === 'user')
-    .map((m) => (typeof m.content === 'string'
-      ? m.content
-      : (m.content ?? []).map((p) => (p?.type === 'text' ? p.text : '')).join('')));
-
-  const latestUser = userTexts.at(-1)?.trim() ?? '';
-  const parts = [];
-  if (toolsPrompt) parts.push(toolsPrompt);
   if (systemTexts) parts.push(`[System Instructions]\n${systemTexts}`);
-  if (toolResults.length) parts.push(`[Previous Tool Results]\n${toolResults.join('\n\n')}`);
-  if (latestUser) parts.push(latestUser);
+
+  // Include recent conversation turns (up to 8 turns) so the model has full context
+  const recentTurns = (messages ?? []).slice(-8);
+  if (recentTurns.length > 1) {
+    const formattedHistory = recentTurns.map((m) => {
+      const role = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'Tool Result';
+      let content = '';
+      if (typeof m.content === 'string') content = m.content;
+      else if (Array.isArray(m.content)) {
+        content = m.content.map((p) => (p.type === 'text' ? p.text : p.type === 'tool_use' ? `[Tool: ${p.name}]` : JSON.stringify(p))).join('\n');
+      } else {
+        content = JSON.stringify(m.content);
+      }
+      return `${role}: ${content}`;
+    }).join('\n\n');
+    parts.push(`[Conversation Context]\n${formattedHistory}`);
+  } else {
+    const latestUser = (messages ?? []).filter((m) => m.role === 'user').map((m) => typeof m.content === 'string' ? m.content : '').at(-1) || '';
+    if (latestUser) parts.push(latestUser);
+  }
 
   return parts.join('\n\n');
 }
