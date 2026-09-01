@@ -65,7 +65,7 @@ async function refresh(forceModels = false) {
   if (sw && sw.bridgeUrl) bridge = sw.bridgeUrl;
 
   const isConnected = Boolean(sw?.connected);
-  $('conn-dot').className = `h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`;
+  $('conn-dot').className = isConnected ? 'dot' : 'dot down';
   $('conn-text').textContent = isConnected ? 'Connected' : 'Offline';
 
   if (document.activeElement !== $('url')) $('url').value = bridge;
@@ -76,8 +76,14 @@ async function refresh(forceModels = false) {
     loadQuota();
   }
 
-  $('err').textContent = sw?.lastError || (status ? '' : 'Bridge not reachable. Please check your VPS or server.mjs.');
-  if (window.lucide) window.lucide.createIcons();
+  const errEl = $('err');
+  const errorMsg = sw?.lastError || (status ? '' : 'Bridge not reachable. Please check your VPS or server.mjs.');
+  if (errorMsg) {
+    errEl.textContent = errorMsg;
+    errEl.style.display = 'block';
+  } else {
+    errEl.style.display = 'none';
+  }
 }
 
 $('model').addEventListener('change', async () => {
