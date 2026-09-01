@@ -1,6 +1,6 @@
-# 🚀 AIPass Bridge
+# 🚀 Web AI Bridge
 
-An open-source developer interoperability proxy and local API gateway for authorized personal sessions on [de.aipass.net](https://de.aipass.net/chat), providing standard OpenAI-compatible endpoints, real-time SSE streaming, and terminal utilities.
+An open-source developer interoperability proxy and local API gateway for authorized web sessions, providing standard OpenAI-compatible endpoints, real-time SSE streaming, and terminal utilities.
 
 ---
 
@@ -9,7 +9,7 @@ An open-source developer interoperability proxy and local API gateway for author
 - 🔌 **OpenAI-Compatible API (`/v1/chat/completions`, `/v1/models`):** Connect directly to Cursor, VS Code (Cline / Roo Code / Aider), Open WebUI, Chatbox, Python/Node.js OpenAI SDKs.
 - 🍪 **Direct Headless Mode (via Cookie):** Run standalone 24/7 on servers **without keeping any browser tab open**.
 - 🔄 **Sliding Session Keep-Alive & Auto-Refresh:** Automatic 30-minute keepalive heartbeat and seamless session cookie persistence to prevent expiry.
-- 🧩 **Chrome Extension Mode:** Zero-credential forwarding mode inside a live browser tab.
+- 🧩 **Browser Extension Mode:** Zero-credential forwarding mode inside a live browser tab.
 - ⚡ **Real-time SSE Streaming & Web Search:** Live token streaming with tool reasoning and source citations.
 - 🤖 **Autonomous Coding Agent (`bun run agent`):** In-repo tool for project inspection, diff previews, and safe file modifications.
 
@@ -22,7 +22,7 @@ An open-source developer interoperability proxy and local API gateway for author
                   │ HTTP (OpenAI API Standard)
                   ▼
 ┌────────────────────────────────────────────────────────┐
-│               aipass bridge server (:8787)             │
+│                 AI Bridge Server (:8787)               │
 │                                                        │
 │  [Mode A: Cookie Direct (Headless)] [Mode B: Extension]│
 │  Direct fetch with session cookie   Relays over SSE    │
@@ -31,7 +31,7 @@ An open-source developer interoperability proxy and local API gateway for author
             │                                │
             ▼                                ▼
 ┌────────────────────────────────────────────────────────┐
-│             https://de.aipass.net (AIPass API)         │
+│             Target Web Portal / Remote Service         │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -53,12 +53,12 @@ npm install
 
 ### Mode 1: Direct Headless Mode (Recommended — No Browser Needed)
 
-Runs headless on a server or in the background without needing Chrome or an open tab.
+Runs headless on a server or in the background without needing a browser or an open tab.
 
 #### Setup:
-1. Open [https://de.aipass.net/chat](https://de.aipass.net/chat) in your browser and sign in.
+1. Open the target web portal in your browser and sign in.
 2. Press `F12` (Inspect) → **Network** tab → Refresh the page once.
-3. Click any request (e.g. `list-models.data`) and copy the **`Cookie`** header value from **Request Headers**.
+3. Click any request and copy the **`Cookie`** header value from **Request Headers**.
 4. Save the cookie into `.env` or `.cookie`:
    ```bash
    echo 'AIPASS_COOKIE="your_cookie_here"' > .env
@@ -77,22 +77,22 @@ Runs headless on a server or in the background without needing Chrome or an open
 
 ---
 
-### Mode 2: Chrome Extension Mode
+### Mode 2: Browser Extension Mode
 
-The bridge hands requests to an MV3 extension service worker, and the real fetch runs inside a `de.aipass.net` tab where Chrome attaches session credentials automatically.
+The bridge hands requests to an extension service worker, and the fetch runs inside the active tab where the browser attaches session credentials automatically.
 
 #### Setup:
 1. Start the bridge:
    ```bash
    bun dev
    ```
-2. Open Chrome and navigate to `chrome://extensions`.
+2. Open Chrome/Chromium and navigate to `chrome://extensions`.
 3. Enable **Developer mode** (top-right toggle).
 4. Click **Load unpacked** and select the folder:
    ```text
    aipass-bridge/extension
    ```
-5. Open [https://de.aipass.net/chat](https://de.aipass.net/chat) in a tab and keep it open. The extension popup will show **connected**.
+5. Open the chat web portal in a tab and keep it open. The extension popup will show **connected**.
 
 ---
 
@@ -107,7 +107,7 @@ bun run chat
 bun run chat -- "Summarize today's tech news"
 
 # Specify a model
-bun run chat -- --model claude-sonnet-5@default "Hello"
+bun run chat -- --model gemini-3.1-flash-lite "Hello"
 
 # Connect to a remote bridge server
 bun run chat -- --bridge http://157.85.96.7:8787 "Hello"
@@ -115,7 +115,7 @@ bun run chat -- --bridge http://157.85.96.7:8787 "Hello"
 
 ### Models & Conversations
 ```bash
-# List available models (marks free-credit models)
+# List available models
 bun run models
 
 # List conversations and active conversation ID
@@ -155,7 +155,7 @@ curl -N -s -X POST http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "stream": true,
-    "model": "gemini-3.7-flash",
+    "model": "gemini-3.1-flash-lite",
     "messages": [
       { "role": "user", "content": "Explain quantum computing briefly" }
     ]
@@ -208,14 +208,15 @@ npm test
 
 ## ⚖️ Disclaimer & Compliance
 
-- **Educational & Interoperability Purposes:** This project is an independent, open-source developer tool created solely for research, accessibility, and local interoperability purposes.
-- **No Affiliation:** This project is not affiliated with, endorsed by, maintained by, or in any way officially connected with AIPass, DEPA, or any of their subsidiaries or affiliates.
-- **User Responsibility:** Users are strictly responsible for their own account usage and ensuring compliance with the applicable Terms of Service and local laws of any platform they interact with.
-- **Privacy & Security:** This software does not collect, track, or forward user credentials, session tokens, or private data to any third-party servers. All communications remain strictly between your local client and your own authenticated session.
+- **Educational & Interoperability Purposes:** This project is an independent, open-source developer utility created solely for research, accessibility, and local interoperability purposes.
+- **No Affiliation:** This project is not affiliated with, endorsed by, sponsored by, or connected with any proprietary third-party platform or service provider.
+- **User Responsibility:** Users are strictly responsible for their own account usage and for complying with the applicable Terms of Service and local laws of any platform they interact with.
+- **Privacy & Security:** This software does not collect, log, or forward user credentials or private data to any third-party servers. All operations remain strictly between your local client and your own authorized session.
 
 ---
 
 ## 📄 License
 MIT
+
 
 
