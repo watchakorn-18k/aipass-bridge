@@ -979,10 +979,32 @@ function buildUserPrompt(messages, tools, functions, tool_choice) {
     parts.push(`[Conversation Context]\n${formattedHistory}`);
   } else {
     const latestUser = (messages ?? []).filter((m) => m.role === 'user').map((m) => typeof m.content === 'string' ? m.content : '').at(-1) || '';
-    if (latestUser) parts.push(latestUser);
+    if (latestUser) parts.push(preprocessPromptText(latestUser, messages));
   }
 
   return parts.join('\n\n');
+}
+
+function preprocessPromptText(text, messages = []) {
+  if (!text) return text;
+
+  // Detect if the prompt is sending a raw git diff or asking for a commit message
+  const isGitDiff = /diff\s+--git\s+[ab]\/|index\s+[0-9a-f]+\.\.[0-9a-f]+/i.test(text);
+  const isCommitIntent = /(?:commit\s+message|conventional\s+commit|git\s+commit|write\s+a\s+commit|generate\s+a\s+commit)/i.test(text) ||
+    messages.some((m) => /(?:commit\s+message|conventional\s+commit|git\s+commit)/i.test(typeof m.content === 'string' ? m.content : ''));
+
+  if (isGitDiff || isCommitIntent) {
+    return `${text}
+
+[System Directive: Git Conventional Commit Generation]:
+Analyze the git diff / changes above and output ONLY a concise, high-quality Conventional Commit message (e.g. "docs: remove outdated README.md" or "feat(auth): implement user authentication").
+Rules:
+1. Output ONLY the commit message itself (First line: <type>(<scope>): <description>).
+2. Do NOT write conversational replies, suggestions, questions, or greetings (e.g. do NOT say "You have deleted...", "Here is the commit...").
+3. Do NOT wrap in explanation prose.`;
+  }
+
+  return text;
 }
 
 // Only the newest user message is sent. The server holds the history, and a
@@ -993,7 +1015,8 @@ function lastUserText(messages) {
     .map((m) => (typeof m.content === 'string'
       ? m.content
       : (m.content ?? []).map((p) => (p?.type === 'text' ? p.text : '')).join('')));
-  return texts.at(-1)?.trim() ?? '';
+  const raw = texts.at(-1)?.trim() ?? '';
+  return preprocessPromptText(raw, messages);
 }
 
 /* ------------------------------------------------------------ http plumbing */
