@@ -657,6 +657,29 @@ function parseToolCallsFromOutput(text, tools, functions) {
     };
   }
 
+  // Automatic Codeblock Extraction: If model provided a code block and a write tool exists
+  const writeToolName = [...toolNames].find((n) => /write|create|file|editor/i.test(n));
+  if (writeToolName) {
+    const codeBlockMatch = text.match(/```(?:[a-zA-Z0-9_\-\.]+)?\r?\n([\s\S]+?)\r?\n```/);
+    if (codeBlockMatch && codeBlockMatch[1].trim().length > 20) {
+      // Search for filename in text (e.g. index.html, style.css, app.js, oop_example.py)
+      const fileMatch = text.match(/(?:ไฟล์|file|ชื่อ|named|path|to)\s*[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/i)
+                     || text.match(/[`'"]([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,5})[`'"]/);
+      const targetFile = fileMatch ? fileMatch[1] : 'index.html';
+      return {
+        textWithoutTool: text.replace(codeBlockMatch[0], '').trim(),
+        tool_calls: [{
+          id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+          type: 'function',
+          function: {
+            name: writeToolName,
+            arguments: normalizeToolArguments(writeToolName, { path: targetFile, content: codeBlockMatch[1] }, tools, functions),
+          },
+        }],
+      };
+    }
+  }
+
   return null;
 }
 
