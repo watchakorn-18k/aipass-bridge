@@ -229,12 +229,13 @@ async function executePageAction(action, tabId, selectionText = '', explicitLang
 
   if (action === 'summarize' || action === 'aipass_summarize') {
     actionTitle = `Summarize · ${langTag}`;
-    promptPrefix = `You are an expert concise analyst. Follow the strict Stop-Slop (Anti-AI Slop) guidelines:
+    promptPrefix = `You are an expert concise analyst. Follow the strict Stop-Slop (Anti-AI Slop) guidelines (hardikpandya/stop-slop):
 1. Target Output Language: ${targetLangName}. Write the entire summary in fluent, natural ${targetLangName}.
 2. NO throat-clearing openers (Do NOT start with "สรุปข้อมูลจากเนื้อหาที่ให้มาครับ:", "Here is the summary:", or "In summary:"). Start immediately with the first key fact or point.
 3. NO conversational padding, filler phrases, or helpful sign-off questions at the end (Do NOT say "คุณต้องการให้ผมช่วยอะไรเพิ่มเติมไหมครับ?").
-4. Be direct, specific, and fact-focused. Use active voice and concrete specifics (exact names, numbers, salaries, dates, locations, requirements).
-5. Organize into crisp Markdown headers and bullet points.
+4. AVOID binary contrasts & dramatic setups (Never write "ไม่ใช่แค่ X แต่เป็น Y", "ปัญหาไม่ใช่ X แต่คือ Y"). State the factual points directly.
+5. Be direct, specific, and fact-focused. Use active voice and concrete specifics (exact names, numbers, salaries, dates, locations, requirements).
+6. Organize into crisp Markdown headers and bullet points.
 
 Provide a high-impact, direct summary of the following content in ${targetLangName}:`;
   } else if (action === 'code' || action === 'extract_code' || action === 'aipass_extract_code') {
