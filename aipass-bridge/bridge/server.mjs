@@ -9,6 +9,7 @@
 // for the web UI, so there is nothing to reconstruct on this side.
 import http from 'node:http';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 const PORT = Number(process.env.AIPASS_PORT ?? 8787);
@@ -1484,6 +1485,52 @@ const server = http.createServer(async (req, res) => {
         setTimeout(() => listModels({ force: true }).catch(() => {}), 200);
       }
       return json(res, 200, { ok: true, directMode: Boolean(getCookie()) });
+    }
+
+    if (path === '/git/status') {
+      try {
+        const branch = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8' }).trim();
+        const statusOutput = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim();
+        const files = statusOutput ? statusOutput.split('\n').map((l) => l.trim()) : [];
+        return json(res, 200, {
+          ok: true,
+          branch: branch || 'main',
+          clean: files.length === 0,
+          changedFiles: files.length,
+          files,
+        });
+      } catch (err) {
+        return json(res, 200, { ok: false, error: err.message });
+      }
+    }
+
+    if (path === '/git/commit' && req.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(req) || '{}');
+        execFileSync('git', ['add', '-A']);
+        let msg = body.message;
+        if (!msg) {
+          msg = `feat: automated update at ${new Date().toISOString().replace('T', ' ').slice(0, 19)}`;
+        }
+        execFileSync('git', ['commit', '-m', msg]);
+        let pushed = false;
+        if (body.push) {
+          execFileSync('git', ['push']);
+          pushed = true;
+        }
+        return json(res, 200, { ok: true, message: msg, pushed });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: err.message });
+      }
+    }
+
+    if (path === '/git/push' && req.method === 'POST') {
+      try {
+        execFileSync('git', ['push']);
+        return json(res, 200, { ok: true, message: 'pushed successfully' });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: err.message });
+      }
     }
 
     if ((path === '/' || path === '/dashboard' || path === '/chat') && (req.method === 'GET' || req.method === 'HEAD')) {

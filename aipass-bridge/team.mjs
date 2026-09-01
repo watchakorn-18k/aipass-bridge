@@ -27,6 +27,9 @@ const DEVELOPER_MODEL = flag('developer-model', 'gemini-3.1-flash-lite');
 const REVIEWER_MODEL = flag('reviewer-model', 'claude-sonnet-5@default');
 const APPLY = has('apply');
 const ALLOW_RUN = has('allow-run');
+const DO_COMMIT = has('commit') || has('git');
+const DO_PUSH = has('push');
+const COMMIT_MSG = flag('commit-msg') || flag('m');
 const MAX_ROUNDS = Number(flag('max-rounds', 3));
 
 if (!task) {
@@ -39,6 +42,9 @@ Usage:
 Options:
   --root <dir>              Project workspace root (default: current directory)
   --apply                   Write files directly to disk (default: dry run preview)
+  --commit, --git           Automatically git add and commit the generated changes
+  --push                    Push committed changes to remote git origin
+  --commit-msg, -m <msg>    Custom commit message (default: AI auto-generated message)
   --allow-run               Allow QA/Developer to execute test commands
   --bridge <url>            Bridge URL (default: http://157.85.96.7:8787)
   --architect-model <id>    Model for Architect (default: claude-sonnet-5@default)
@@ -46,8 +52,9 @@ Options:
   --reviewer-model <id>     Model for Reviewer (default: claude-sonnet-5@default)
   --max-rounds <N>          Maximum QA review & fix loops (default: 3)
 
-Example:
-  npm run team -- "Build a snake game with sound effects and scoreboard" --apply
+Examples:
+  npm run team -- "Build a stopwatch in HTML/JS" --apply --commit
+  npm run team -- "Add dark mode toggle to UI" --apply --commit --push
 `);
   process.exit(1);
 }
@@ -336,6 +343,56 @@ Please apply all required fixes and output the corrected files using CREATE <fil
   } else {
     console.log(`\n  ${green('✔ All files written directly to workspace disk.')}`);
   }
+
+  /* --------------------------- GIT COMMIT & PUSH --------------------------- */
+  if (APPLY && (DO_COMMIT || DO_PUSH)) {
+    console.log(`\n${bold(cyan('📦 [Phase 5] Git Automation (Stage, Commit & Push)...'))}`);
+    try {
+      // Check if git is available
+      try {
+        execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: ROOT, stdio: 'ignore' });
+      } catch {
+        console.log(`  ${dim('Initializing git repository in')} ${ROOT}`);
+        execFileSync('git', ['init'], { cwd: ROOT, stdio: 'ignore' });
+      }
+
+      const allChanged = [...new Set([...createdFiles, ...modifiedFiles])];
+      if (allChanged.length > 0) {
+        execFileSync('git', ['add', ...allChanged], { cwd: ROOT });
+        console.log(`  ${green('✔')} Staged ${bold(allChanged.length)} files for commit`);
+
+        // Generate commit message
+        let finalMessage = COMMIT_MSG;
+        if (!finalMessage) {
+          const msgPrompt = `Task: "${task}"
+Files changed: ${allChanged.join(', ')}
+
+Please generate a single concise Conventional Commit message (e.g. "feat(scope): short description"). Return only the commit message text without quotes or markdown.`;
+          try {
+            const rawMsg = await callModel(DEVELOPER_MODEL, [{ role: 'user', content: msgPrompt }]);
+            finalMessage = rawMsg.trim().split('\n')[0].replace(/^["'`]|["'`]$/g, '').trim();
+          } catch {
+            finalMessage = `feat: ${task.slice(0, 50)}`;
+          }
+        }
+        if (!finalMessage) finalMessage = `feat: ${task.slice(0, 50)}`;
+
+        execFileSync('git', ['commit', '-m', finalMessage], { cwd: ROOT });
+        console.log(`  ${green('✔')} Git committed with message: ${bold(cyan(`"${finalMessage}"`))}`);
+
+        if (DO_PUSH) {
+          console.log(`  ${dim('Pushing changes to remote git origin...')}`);
+          execFileSync('git', ['push'], { cwd: ROOT });
+          console.log(`  ${green('✔')} Successfully pushed to remote repository! 🚀`);
+        }
+      } else {
+        console.log(`  ${yellow('ℹ')} No file changes detected to commit.`);
+      }
+    } catch (gitErr) {
+      console.warn(`  ${red('⚠️ Git operation failed:')} ${gitErr.message}`);
+    }
+  }
+
   console.log(`${bold(cyan('══════════════════════════════════════════════════════════════'))}\n`);
 }
 
