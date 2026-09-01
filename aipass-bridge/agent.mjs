@@ -25,7 +25,7 @@ const has = (name) => argv.includes(`--${name}`);
 
 const task = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--')).join(' ').trim();
 const ROOT = path.resolve(flag('root', process.cwd()));
-const BRIDGE = (flag('bridge', 'http://127.0.0.1:8787')).replace(/\/+$/, '');
+const BRIDGE = (flag('bridge', process.env.AIPASS_BRIDGE ?? 'http://127.0.0.1:8787')).replace(/\/+$/, '');
 const MODEL = flag('model', null);
 const MAX_STEPS = Number(flag('max', 10));
 const APPLY = has('apply');

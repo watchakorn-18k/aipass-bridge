@@ -8,6 +8,7 @@
 // back. The server owns the conversation and its history, exactly as it does
 // for the web UI, so there is nothing to reconstruct on this side.
 import http from 'node:http';
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 const PORT = Number(process.env.AIPASS_PORT ?? 8787);
@@ -88,6 +89,179 @@ function extractModels(decoded) {
   return MODEL_FILTER === 'all' ? out : out.filter((m) => !m.media && m.ready);
 }
 
+const AIPASS_ORIGIN = process.env.AIPASS_ORIGIN ?? 'https://de.aipass.net';
+let memoryCookie = process.env.AIPASS_COOKIE ?? '';
+
+function getCookie() {
+  if (memoryCookie) return memoryCookie;
+  try {
+    if (fs.existsSync('aipass-bridge/.cookie')) return fs.readFileSync('aipass-bridge/.cookie', 'utf8').trim();
+    if (fs.existsSync('.cookie')) return fs.readFileSync('.cookie', 'utf8').trim();
+  } catch {}
+  return '';
+}
+
+function setCookie(cookie) {
+  memoryCookie = (cookie ?? '').trim();
+  try {
+    fs.writeFileSync('aipass-bridge/.cookie', memoryCookie);
+  } catch {}
+}
+
+async function runDirect(job) {
+  const cookie = getCookie();
+  if (!cookie) {
+    return job.fail('no extension connected and no AIPASS_COOKIE provided');
+  }
+
+  const commonHeaders = {
+    cookie,
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+    referer: `${AIPASS_ORIGIN}/chat`,
+    origin: AIPASS_ORIGIN,
+  };
+
+  if (job.kind === 'loader') {
+    try {
+      const res = await fetch(`${AIPASS_ORIGIN}${job.url}`, {
+        headers: { ...commonHeaders, accept: '*/*' },
+      });
+      if (!res.ok) throw new Error(`aipass returned ${res.status} ${res.statusText}`);
+      job.done(await res.text());
+    } catch (err) {
+      job.fail(err.message);
+    }
+    return;
+  }
+
+  if (job.kind === 'create') {
+    try {
+      const params = new URLSearchParams({
+        message: job.message,
+        folderId: '',
+        modelId: job.modelId,
+        intent: 'create-conversation',
+        clientCreateRequestId: job.requestId,
+      });
+      const res = await fetch(`${AIPASS_ORIGIN}/chat.data`, {
+        method: 'POST',
+        headers: {
+          ...commonHeaders,
+          'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          accept: '*/*',
+        },
+        body: params.toString(),
+      });
+      if (!res.ok) throw new Error(`aipass returned ${res.status} ${res.statusText}`);
+      job.done(await res.text());
+    } catch (err) {
+      job.fail(err.message);
+    }
+    return;
+  }
+
+  if (job.kind === 'chat') {
+    const controller = new AbortController();
+    job.abortController = controller;
+
+    try {
+      const body = JSON.stringify({
+        modelId: job.modelId,
+        imageAspectRatio: '1:1',
+        messages: [{
+          id: randomUUID(),
+          role: 'user',
+          metadata: { modelId: job.modelId },
+          parts: [{ type: 'text', text: job.text }],
+        }],
+      });
+
+      const res = await fetch(`${AIPASS_ORIGIN}/actions/send-message/${encodeURIComponent(job.conversationId)}`, {
+        method: 'POST',
+        headers: {
+          ...commonHeaders,
+          'content-type': 'application/json',
+          accept: '*/*',
+        },
+        body,
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => '')).slice(0, 300);
+        throw new Error(`aipass returned ${res.status} ${res.statusText} — ${detail}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+      let finishReason = 'stop';
+      const toolNames = new Map();
+      const sources = [];
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        pending += decoder.decode(value, { stream: true });
+
+        let cut;
+        while ((cut = pending.search(/\r?\n\r?\n/)) !== -1) {
+          const frame = pending.slice(0, cut);
+          pending = pending.slice(cut + pending.slice(cut).match(/^\r?\n\r?\n/)[0].length);
+
+          const data = frame
+            .split(/\r?\n/)
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).trim())
+            .join('\n');
+          if (!data || data === '[DONE]') continue;
+
+          let evt;
+          try { evt = JSON.parse(data); } catch { continue; }
+
+          switch (evt.type) {
+            case 'text-delta':
+              job.delta({ kind: 'text', text: evt.delta });
+              break;
+            case 'reasoning-delta':
+              job.delta({ kind: 'reasoning', text: evt.delta ?? evt.text });
+              break;
+            case 'tool-input-start':
+              toolNames.set(evt.toolCallId, evt.toolName);
+              break;
+            case 'tool-input-available':
+              toolNames.set(evt.toolCallId, evt.toolName);
+              job.delta({ kind: 'status', text: `[${evt.toolName}] ${JSON.stringify(evt.input ?? {})}` });
+              break;
+            case 'tool-output-available': {
+              const name = toolNames.get(evt.toolCallId) ?? 'tool';
+              const size = typeof evt.output === 'string' ? evt.output.length : JSON.stringify(evt.output ?? '').length;
+              job.delta({ kind: 'status', text: `[${name}] returned ${size} chars` });
+              break;
+            }
+            case 'source-url':
+              if (evt.url && !sources.some((x) => x.url === evt.url)) sources.push({ url: evt.url, title: evt.title });
+              break;
+            case 'error':
+              throw new Error(evt.errorText ?? evt.message ?? 'stream error');
+            case 'finish':
+              finishReason = evt.finishReason ?? finishReason;
+              break;
+          }
+        }
+      }
+
+      if (sources.length) {
+        job.delta({ kind: 'status', text: `sources:\n${sources.map((x) => `  - ${x.title ?? ''} ${x.url}`).join('\n')}` });
+      }
+      job.done(finishReason);
+    } catch (err) {
+      if (err?.name === 'AbortError') job.done('stop');
+      else job.fail(String(err?.message ?? err));
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- job hub */
 
 const jobs = new Map();
@@ -122,17 +296,26 @@ class Job {
   }
   touch() {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.fail('timed out waiting for the extension'), this.timeoutMs);
+    this.timer = setTimeout(() => this.fail('timed out waiting for response'), this.timeoutMs);
   }
   dispatch() {
+    if (getCookie()) {
+      runDirect(this);
+      return;
+    }
+
     const client = pickClient();
-    if (!client) return this.fail('no extension connected — open a de.aipass.net tab and check the popup');
-    this.client = client;
-    sendToClient(client, 'job', this.kind === 'loader'
-      ? { jobId: this.id, kind: 'loader', url: this.url }
-      : this.kind === 'create'
-      ? { jobId: this.id, kind: 'create', modelId: this.modelId, message: this.message, requestId: this.requestId }
-      : { jobId: this.id, kind: 'chat', conversationId: this.conversationId, modelId: this.modelId, text: this.text });
+    if (client) {
+      this.client = client;
+      sendToClient(client, 'job', this.kind === 'loader'
+        ? { jobId: this.id, kind: 'loader', url: this.url }
+        : this.kind === 'create'
+        ? { jobId: this.id, kind: 'create', modelId: this.modelId, message: this.message, requestId: this.requestId }
+        : { jobId: this.id, kind: 'chat', conversationId: this.conversationId, modelId: this.modelId, text: this.text });
+      return;
+    }
+
+    return this.fail('no extension connected and no AIPASS_COOKIE — open a de.aipass.net tab with extension or set AIPASS_COOKIE in .env');
   }
   delta(part) { if (!this.settled) { this.touch(); this.onDelta(part); } }
   done(value) { if (this.settled) return; this.cleanup(); this.onDone(value ?? 'stop'); }
@@ -140,6 +323,7 @@ class Job {
   abort() {
     if (this.settled) return;
     if (this.client) sendToClient(this.client, 'abort', { jobId: this.id });
+    if (this.abortController) this.abortController.abort();
     this.cleanup();
   }
   cleanup() { this.settled = true; clearTimeout(this.timer); jobs.delete(this.id); }
@@ -164,7 +348,7 @@ const cachedModels = () =>
 
 async function listModels({ force = false } = {}) {
   if (!force && modelCache.models.length && Date.now() - modelCache.at < MODEL_TTL_MS) return modelCache.models;
-  if (!extClients.size) return cachedModels();
+  if (!extClients.size && !getCookie()) return cachedModels();
   if (modelRefresh) return modelRefresh; // several callers can race; only one should hit the API
   modelRefresh = (async () => {
     try {
@@ -193,7 +377,7 @@ let conversationList = [];
 let conversationIndex = 0;
 
 async function loadConversations() {
-  if (!extClients.size) throw new Error('no extension connected — cannot look up a conversation');
+  if (!extClients.size && !getCookie()) throw new Error('no extension connected and no AIPASS_COOKIE — cannot look up a conversation');
   const decoded = decodeTurboStream(await fetchLoader(LOADERS.conversations));
   const list = [];
   const walk = (v) => {
@@ -460,8 +644,12 @@ async function extPost(req, res, kind) {
   else if (kind === 'done') job.done(body.finishReason);
   else if (kind === 'loader') {
     if (typeof body.raw === 'string') job.done(body.raw);
+    else if (getCookie()) runDirect(job);
     else job.fail(body.message ?? 'loader fetch failed');
-  } else job.fail(body.message ?? 'extension reported an error');
+  } else {
+    if (getCookie()) runDirect(job);
+    else job.fail(body.message ?? 'extension reported an error');
+  }
   return json(res, 200, { ok: true });
 }
 
@@ -530,9 +718,20 @@ const server = http.createServer(async (req, res) => {
     if (path === '/ext/error' && req.method === 'POST') return await extPost(req, res, 'error');
     if (path === '/ext/loader' && req.method === 'POST') return await extPost(req, res, 'loader');
 
+    if (path === '/cookie' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      if (typeof body.cookie === 'string') {
+        setCookie(body.cookie);
+        log('AIPASS_COOKIE updated via /cookie API');
+        setTimeout(() => listModels({ force: true }).catch(() => {}), 200);
+      }
+      return json(res, 200, { ok: true, directMode: Boolean(getCookie()) });
+    }
+
     if (path === '/status' || path === '/health') {
       return json(res, 200, {
         ok: true,
+        directMode: Boolean(getCookie()),
         extensions: extClients.size,
         activeJobs: jobs.size,
         defaultModel,
@@ -553,5 +752,10 @@ server.listen(PORT, HOST, () => {
   log(`aipass bridge on http://${HOST}:${PORT}`);
   log(`  default model : ${defaultModel}`);
   log(`  conversation  : ${PINNED_CONVERSATION || 'most recent on the account'}`);
-  log('  waiting for the Chrome extension…');
+  if (getCookie()) {
+    log('  mode          : direct (AIPASS_COOKIE found, headless ready)');
+    setTimeout(() => listModels({ force: true }).catch(() => {}), 500);
+  } else {
+    log('  waiting for Chrome extension or AIPASS_COOKIE…');
+  }
 });

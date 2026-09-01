@@ -12,7 +12,7 @@ const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? fallback : argv[i + 1];
 };
-const BRIDGE = (flag('bridge', 'http://127.0.0.1:8787')).replace(/\/+$/, '');
+const BRIDGE = (flag('bridge', process.env.AIPASS_BRIDGE ?? 'http://127.0.0.1:8787')).replace(/\/+$/, '');
 const CONVERSATION = flag('conversation', null);
 const NEW = argv.includes('--new');
 let model = flag('model', null);
@@ -28,8 +28,8 @@ if (!status) {
   console.error(red(`No bridge at ${BRIDGE}. Start it with: npm run dev`));
   process.exit(1);
 }
-if (!status.extensions) {
-  console.error(red('The extension is not connected. Open a https://de.aipass.net/chat tab.'));
+if (!status.extensions && !status.directMode) {
+  console.error(red('The extension is not connected and no AIPASS_COOKIE is set. Open a https://de.aipass.net/chat tab or configure cookie.'));
   process.exit(1);
 }
 model ??= status.defaultModel;
