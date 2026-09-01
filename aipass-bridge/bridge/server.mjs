@@ -988,12 +988,24 @@ function buildUserPrompt(messages, tools, functions, tool_choice) {
 function preprocessPromptText(text, messages = []) {
   if (!text) return text;
 
-  // Detect if the prompt is sending a raw git diff or asking for a commit message
-  const isGitDiff = /diff\s+--git\s+[ab]\/|index\s+[0-9a-f]+\.\.[0-9a-f]+/i.test(text);
-  const isCommitIntent = /(?:commit\s+message|conventional\s+commit|git\s+commit|write\s+a\s+commit|generate\s+a\s+commit)/i.test(text) ||
-    messages.some((m) => /(?:commit\s+message|conventional\s+commit|git\s+commit)/i.test(typeof m.content === 'string' ? m.content : ''));
+  // 1. Check if the intent is explicit Summarization / Page Analysis / Explanation
+  const isSummarizeIntent = /(?:สรุป|summarize|summary|tl;?dr|analyze\s+this\s+page|Stop-Slop|extract\s+code)/i.test(text);
+  if (isSummarizeIntent) {
+    return `${text}
 
-  if (isGitDiff || isCommitIntent) {
+[System Directive: Stop-Slop Anti-AI Prose Guidelines]:
+1. NO throat-clearing openers (Never say "สรุปข้อมูลจาก...", "Here is the summary:", "In summary:"). Start immediately with the core factual points.
+2. NO conversational padding, filler, or follow-up sign-off questions (Never say "คุณต้องการให้ช่วยอะไรเพิ่มเติมไหมครับ?").
+3. Use active voice, crisp Markdown structure, and specific details (exact numbers, names, dates, requirements).`;
+  }
+
+  // 2. Check if the prompt is truly a raw git diff or an explicit command to generate a commit message
+  const isRawGitDiff = /^\s*diff\s+--git\s+[ab]\/|^\s*@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/m.test(text);
+  const isCommitCommand = /^(?:generate|write|create|make|suggest|give\s+me)\s+(?:a\s+)?(?:conventional\s+)?commit\s+message/i.test(text.trim()) ||
+                          /(?:สร้าง|เขียน|ขอ)\s*commit\s*message/i.test(text) ||
+                          messages.some((m) => /^(?:generate|write|create)\s+commit\s+message/i.test(typeof m.content === 'string' ? m.content.trim() : ''));
+
+  if (isRawGitDiff || isCommitCommand) {
     return `${text}
 
 [System Directive: Git Conventional Commit Generation]:
@@ -1002,16 +1014,6 @@ Rules:
 1. Output ONLY the commit message itself (First line: <type>(<scope>): <description>).
 2. Do NOT write conversational replies, suggestions, questions, or greetings (e.g. do NOT say "You have deleted...", "Here is the commit...").
 3. Do NOT wrap in explanation prose.`;
-  }
-
-  const isSummarizeIntent = /(?:สรุป|summarize|summary|tl;?dr)/i.test(text);
-  if (isSummarizeIntent) {
-    return `${text}
-
-[System Directive: Stop-Slop Anti-AI Prose Guidelines]:
-1. NO throat-clearing openers (Never say "สรุปข้อมูลจาก...", "Here is the summary:", "In summary:"). Start immediately with the core factual points.
-2. NO conversational padding, filler, or follow-up sign-off questions (Never say "คุณต้องการให้ช่วยอะไรเพิ่มเติมไหมครับ?").
-3. Use active voice, crisp Markdown structure, and specific details (exact numbers, names, dates, requirements).`;
   }
 
   return text;
