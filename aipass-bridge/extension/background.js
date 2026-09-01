@@ -179,7 +179,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg?.type === 'reconnect') { controller?.abort(); connect(); sendResponse({ ok: true }); return true; }
   if (msg?.type === 'run_action') {
-    executePageAction(msg.action, msg.tabId, msg.selectionText || '');
+    executePageAction(msg.action, msg.tabId, msg.selectionText || '', msg.lang || '');
     sendResponse({ ok: true });
     return true;
   }
@@ -211,19 +211,32 @@ function setupContextMenus() {
   });
 }
 
-async function executePageAction(action, tabId, selectionText = '') {
+async function executePageAction(action, tabId, selectionText = '', explicitLang = '') {
+  const storedLang = (await chrome.storage.local.get('summaryLang')).summaryLang || 'th';
+  const lang = explicitLang || storedLang || 'th';
+
+  const langNames = {
+    th: 'ภาษาไทย (Thai)',
+    en: 'English',
+    ja: '日本語 (Japanese)',
+    zh: '简体中文 (Simplified Chinese)',
+  };
+  const targetLangName = langNames[lang] || 'ภาษาไทย (Thai)';
+  const langTag = lang.toUpperCase();
+
   let actionTitle = 'Analyzing';
   let promptPrefix = 'Please analyze this page:';
 
   if (action === 'summarize' || action === 'aipass_summarize') {
-    actionTitle = 'Summarize';
+    actionTitle = `Summarize · ${langTag}`;
     promptPrefix = `You are an expert concise analyst. Follow the strict Stop-Slop (Anti-AI Slop) guidelines:
-1. NO throat-clearing openers (Do NOT start with "สรุปข้อมูลจากเนื้อหาที่ให้มาครับ:", "Here is the summary:", or "In summary:"). Start immediately with the first key fact or point.
-2. NO conversational padding, filler phrases, or helpful sign-off questions at the end (Do NOT say "คุณต้องการให้ผมช่วยอะไรเพิ่มเติมไหมครับ?").
-3. Be direct, specific, and fact-focused. Use active voice and concrete specifics (exact names, numbers, salaries, dates, locations, requirements).
-4. Organize into crisp Markdown headers and bullet points.
+1. Target Output Language: ${targetLangName}. Write the entire summary in fluent, natural ${targetLangName}.
+2. NO throat-clearing openers (Do NOT start with "สรุปข้อมูลจากเนื้อหาที่ให้มาครับ:", "Here is the summary:", or "In summary:"). Start immediately with the first key fact or point.
+3. NO conversational padding, filler phrases, or helpful sign-off questions at the end (Do NOT say "คุณต้องการให้ผมช่วยอะไรเพิ่มเติมไหมครับ?").
+4. Be direct, specific, and fact-focused. Use active voice and concrete specifics (exact names, numbers, salaries, dates, locations, requirements).
+5. Organize into crisp Markdown headers and bullet points.
 
-Provide a high-impact, direct summary of the following content:`;
+Provide a high-impact, direct summary of the following content in ${targetLangName}:`;
   } else if (action === 'code' || action === 'extract_code' || action === 'aipass_extract_code') {
     actionTitle = 'Extract Code';
     promptPrefix = `Extract all programming code blocks, API endpoints, data models, or structured tables from this content. Return ONLY the extracted code and clean Markdown tables without filler prose:`;
@@ -231,8 +244,8 @@ Provide a high-impact, direct summary of the following content:`;
     actionTitle = 'Convert to API';
     promptPrefix = `Convert the data and structure of this page into a clean JSON REST API schema and sample response. Output ONLY the JSON/Schema without filler prose:`;
   } else if (action === 'explain' || action === 'aipass_explain') {
-    actionTitle = 'Explain';
-    promptPrefix = `Explain this selected text directly and clearly with practical context, following Stop-Slop rules (no throat-clearing, direct facts only):`;
+    actionTitle = `Explain · ${langTag}`;
+    promptPrefix = `Explain this selected text directly and clearly with practical context in ${targetLangName}, following Stop-Slop rules (no throat-clearing, direct facts only):`;
   }
 
   // 1. Inject overlay into the active tab

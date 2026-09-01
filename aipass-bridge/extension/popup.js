@@ -94,8 +94,15 @@ $('model').addEventListener('change', async () => {
   }).catch(() => {});
 });
 
+$('summary-lang').addEventListener('change', async () => {
+  await chrome.storage.local.set({ summaryLang: $('summary-lang').value });
+});
+
 $('save').addEventListener('click', async () => {
-  await chrome.storage.local.set({ bridgeUrl: $('url').value.trim().replace(/\/+$/, '') });
+  await chrome.storage.local.set({
+    bridgeUrl: $('url').value.trim().replace(/\/+$/, ''),
+    summaryLang: $('summary-lang').value,
+  });
   await chrome.runtime.sendMessage({ type: 'reconnect' });
   setTimeout(() => refresh(true), 400);
 });
@@ -110,7 +117,8 @@ $('btn-open-dash').addEventListener('click', () => {
 $('btn-qa-summarize').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
-  chrome.runtime.sendMessage({ type: 'run_action', action: 'summarize', tabId: tab.id });
+  const lang = $('summary-lang').value || 'th';
+  chrome.runtime.sendMessage({ type: 'run_action', action: 'summarize', tabId: tab.id, lang });
   window.close();
 });
 
@@ -122,6 +130,10 @@ $('btn-qa-code').addEventListener('click', async () => {
   window.close();
 });
 
+(async () => {
+  const { summaryLang } = await chrome.storage.local.get('summaryLang');
+  if (summaryLang && $('summary-lang')) $('summary-lang').value = summaryLang;
+})();
+
 refresh(true);
 setInterval(() => refresh(false), 2000);
-if (window.lucide) window.lucide.createIcons();
