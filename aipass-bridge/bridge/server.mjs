@@ -607,26 +607,45 @@ function parseToolCallsFromOutput(text, tools, functions) {
     } catch {}
   }
 
-  const trimmed = text.trim();
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && parsed.name) {
-        if (!toolNames.size || toolNames.has(parsed.name)) {
-          return {
-            textWithoutTool: '',
-            tool_calls: [{
-              id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-              type: 'function',
-              function: {
-                name: parsed.name,
-                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments ?? {}),
-              },
-            }],
-          };
-        }
-      }
-    } catch {}
+  // Check for CREATE <path>\n<content>\nEND marker
+  const createMatch = text.match(/CREATE\s+([^\r\n]+)\r?\n([\s\S]*?)\r?\nEND/);
+  if (createMatch) {
+    const writeTool = [...toolNames].find((n) => /write|create|file/i.test(n)) || 'write_file';
+    return {
+      textWithoutTool: text.replace(createMatch[0], '').trim(),
+      tool_calls: [{
+        id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+        type: 'function',
+        function: {
+          name: writeTool,
+          arguments: JSON.stringify({ path: createMatch[1].trim(), content: createMatch[2] }),
+        },
+      }],
+    };
+  }
+
+  // Fallback: If the user asked to write/create a file and the model provided a code block,
+  // automatically extract it into a tool_call so the client's file writer executes!
+  const writeToolName = [...toolNames].find((n) => /write|create|file|editor/i.test(n));
+  if (writeToolName) {
+    const anyCodeBlock = /```(?:[a-zA-Z0-9_\-]+)?\r?\n([\s\S]+?)\r?\n```/g;
+    const match = anyCodeBlock.exec(text);
+    if (match && match[1].trim().length > 10) {
+      // Find filename from text or user context (e.g. index.html, main.js, style.css)
+      const fileMatch = text.match(/[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/);
+      const targetFile = fileMatch ? fileMatch[1] : 'index.html';
+      return {
+        textWithoutTool: text.replace(match[0], '').trim(),
+        tool_calls: [{
+          id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+          type: 'function',
+          function: {
+            name: writeToolName,
+            arguments: JSON.stringify({ path: targetFile, content: match[1] }),
+          },
+        }],
+      };
+    }
   }
 
   return null;
