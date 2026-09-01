@@ -110,7 +110,7 @@ $('btn-open-dash').addEventListener('click', () => {
 $('btn-qa-summarize').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
-  chrome.tabs.sendMessage(tab.id, { type: 'trigger_action', action: 'summarize' }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'run_action', action: 'summarize', tabId: tab.id });
   window.close();
 });
 
@@ -118,7 +118,7 @@ $('btn-qa-summarize').addEventListener('click', async () => {
 $('btn-qa-code').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return;
-  chrome.tabs.sendMessage(tab.id, { type: 'trigger_action', action: 'code' }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'run_action', action: 'code', tabId: tab.id });
   window.close();
 });
 

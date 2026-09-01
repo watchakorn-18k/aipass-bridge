@@ -178,6 +178,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === 'reconnect') { controller?.abort(); connect(); sendResponse({ ok: true }); return true; }
+  if (msg?.type === 'run_action') {
+    executePageAction(msg.action, msg.tabId, msg.selectionText || '');
+    sendResponse({ ok: true });
+    return true;
+  }
 });
 
 // Register Context Menus
@@ -206,51 +211,58 @@ function setupContextMenus() {
   });
 }
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (!tab?.id) return;
-
+async function executePageAction(action, tabId, selectionText = '') {
   let actionTitle = 'Analyzing';
   let promptPrefix = 'Please analyze this page:';
 
-  if (info.menuItemId === 'aipass_summarize') {
+  if (action === 'summarize' || action === 'aipass_summarize') {
     actionTitle = 'Summarize';
     promptPrefix = 'Please provide a concise, high-impact summary of this content with key bullet points and conclusions in Thai/English:';
-  } else if (info.menuItemId === 'aipass_extract_code') {
+  } else if (action === 'code' || action === 'extract_code' || action === 'aipass_extract_code') {
     actionTitle = 'Extract Code';
     promptPrefix = 'Please extract all programming code blocks, API endpoints, data models, or structured tables from this content:';
-  } else if (info.menuItemId === 'aipass_convert_api') {
+  } else if (action === 'convert_api' || action === 'aipass_convert_api') {
     actionTitle = 'Convert to API';
     promptPrefix = 'Please convert the data and structure of this page into a clean JSON REST API schema and sample response:';
-  } else if (info.menuItemId === 'aipass_explain') {
+  } else if (action === 'explain' || action === 'aipass_explain') {
     actionTitle = 'Explain';
     promptPrefix = 'Please explain this selected text clearly and provide context and practical examples:';
   }
 
-  // Inject overlay into the active tab
+  // 1. Inject overlay into the active tab
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       files: ['overlay.js'],
     });
 
-    // Extract text
-    let targetText = info.selectionText || '';
+    // 2. Extract text if not provided
+    let targetText = selectionText || '';
     if (!targetText) {
       const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId },
         func: () => document.body.innerText.slice(0, 15000),
       });
       targetText = result || '';
     }
 
-    // Set initial loading state in overlay
+    if (!targetText.trim()) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (tag) => window.__aipassSetOverlay?.(tag, 'No readable text content found on this page.', true),
+        args: [actionTitle],
+      });
+      return;
+    }
+
+    // 3. Set initial loading state in overlay
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (tag) => window.__aipassSetOverlay?.(tag, 'Sending request to AIPass Bridge...'),
+      target: { tabId },
+      func: (tag) => window.__aipassSetOverlay?.(tag, 'Connecting to AIPass Bridge and generating response...'),
       args: [actionTitle],
     });
 
-    // Stream from Bridge
+    // 4. Stream from Bridge
     const bUrl = await bridgeUrl();
     const res = await fetch(`${bUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -265,7 +277,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId },
         func: (tag, msg) => window.__aipassSetOverlay?.(tag, `Error (${res.status}): ${msg}`, true),
         args: [actionTitle, errText || res.statusText],
       });
@@ -297,7 +309,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
           if (delta) {
             accumulated += delta;
             chrome.scripting.executeScript({
-              target: { tabId: tab.id },
+              target: { tabId },
               func: (tag, text) => window.__aipassSetOverlay?.(tag, text, false),
               args: [actionTitle, accumulated],
             }).catch(() => {});
@@ -307,16 +319,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     }
 
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: (tag, text) => window.__aipassSetOverlay?.(tag, text, true),
       args: [actionTitle, accumulated || 'No response returned.'],
     });
   } catch (err) {
     chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: (tag, err) => window.__aipassSetOverlay?.(tag, `Error: ${err}`, true),
       args: [actionTitle, String(err?.message ?? err)],
     }).catch(() => {});
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (tab?.id) {
+    executePageAction(info.menuItemId, tab.id, info.selectionText || '');
   }
 });
 
