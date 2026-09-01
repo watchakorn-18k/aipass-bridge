@@ -563,6 +563,39 @@ To have my editor create, edit, or write a file, output the tool call in this JS
 Do not tell me to manually create or copy-paste files; my editor will automatically write the file when it sees your JSON tool call.`;
 }
 
+function normalizeToolArguments(toolName, rawArgs, tools, functions) {
+  let args = rawArgs;
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { return rawArgs; }
+  }
+  if (!args || typeof args !== 'object') return rawArgs;
+
+  const tool = (tools ?? []).find((t) => (t.function?.name === toolName || t.name === toolName))
+            || (functions ?? []).find((f) => f.name === toolName);
+  const schema = tool?.function?.parameters || tool?.parameters || tool?.input_schema || {};
+  const props = schema.properties || {};
+
+  const normalized = { ...args };
+
+  // Match file path parameter name: filePath, file_path, path, filename, target_file
+  const expectedPathKey = Object.keys(props).find((k) => /^(file_?path|filePath|path|filename|filepath|target_?file)$/i.test(k));
+  const currentPathKey = Object.keys(normalized).find((k) => /^(file_?path|filePath|path|filename|filepath|target_?file)$/i.test(k));
+  if (expectedPathKey && currentPathKey && expectedPathKey !== currentPathKey) {
+    normalized[expectedPathKey] = normalized[currentPathKey];
+    delete normalized[currentPathKey];
+  }
+
+  // Match content parameter name: content, file_content, new_content, text, data
+  const expectedContentKey = Object.keys(props).find((k) => /^(content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
+  const currentContentKey = Object.keys(normalized).find((k) => /^(content|file_?content|fileContent|new_?content|text|data|code)$/i.test(k));
+  if (expectedContentKey && currentContentKey && expectedContentKey !== currentContentKey) {
+    normalized[expectedContentKey] = normalized[currentContentKey];
+    delete normalized[currentContentKey];
+  }
+
+  return JSON.stringify(normalized);
+}
+
 function parseToolCallsFromOutput(text, tools, functions) {
   if (!text) return null;
   const toolNames = new Set([
@@ -584,7 +617,7 @@ function parseToolCallsFromOutput(text, tools, functions) {
             type: 'function',
             function: {
               name: item.name,
-              arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? {}),
+              arguments: normalizeToolArguments(item.name, item.arguments ?? {}, tools, functions),
             },
           })),
         };
@@ -598,7 +631,7 @@ function parseToolCallsFromOutput(text, tools, functions) {
               type: 'function',
               function: {
                 name: parsed.name,
-                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments ?? {}),
+                arguments: normalizeToolArguments(parsed.name, parsed.arguments ?? {}, tools, functions),
               },
             }],
           };
@@ -618,34 +651,10 @@ function parseToolCallsFromOutput(text, tools, functions) {
         type: 'function',
         function: {
           name: writeTool,
-          arguments: JSON.stringify({ path: createMatch[1].trim(), content: createMatch[2] }),
+          arguments: normalizeToolArguments(writeTool, { path: createMatch[1].trim(), content: createMatch[2] }, tools, functions),
         },
       }],
     };
-  }
-
-  // Fallback: If the user asked to write/create a file and the model provided a code block,
-  // automatically extract it into a tool_call so the client's file writer executes!
-  const writeToolName = [...toolNames].find((n) => /write|create|file|editor/i.test(n));
-  if (writeToolName) {
-    const anyCodeBlock = /```(?:[a-zA-Z0-9_\-]+)?\r?\n([\s\S]+?)\r?\n```/g;
-    const match = anyCodeBlock.exec(text);
-    if (match && match[1].trim().length > 10) {
-      // Find filename from text or user context (e.g. index.html, main.js, style.css)
-      const fileMatch = text.match(/[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/);
-      const targetFile = fileMatch ? fileMatch[1] : 'index.html';
-      return {
-        textWithoutTool: text.replace(match[0], '').trim(),
-        tool_calls: [{
-          id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-          type: 'function',
-          function: {
-            name: writeToolName,
-            arguments: JSON.stringify({ path: targetFile, content: match[1] }),
-          },
-        }],
-      };
-    }
   }
 
   return null;
