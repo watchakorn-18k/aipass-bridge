@@ -547,19 +547,18 @@ function formatToolsPrompt(tools, functions, tool_choice) {
     parameters: fn.parameters || { type: 'object', properties: {} },
   }, null, 2)).join('\n');
 
-  return `[TOOLS INSTRUCTION]
-You have access to the following functions/tools:
+  return `# Tools
+You have access to the following tools to interact with the user's environment:
 ${toolDefs}
 
-If you decide to invoke a tool, respond ONLY with a JSON code block in this exact format:
+When you need to use a tool, respond with a JSON markdown code block:
 \`\`\`json
 {
-  "name": "function_name",
+  "name": "tool_name",
   "arguments": { ... }
 }
 \`\`\`
-If no tool call is needed, reply normally.
-[/TOOLS INSTRUCTION]`;
+The user's client environment will execute the tool for you and supply the result in the next turn.`;
 }
 
 function parseToolCallsFromOutput(text, tools, functions) {
