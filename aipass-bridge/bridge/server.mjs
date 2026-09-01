@@ -64,6 +64,8 @@ function decodeTurboStream(text) {
 const LOADERS = {
   models: '/loaders/list-models.data?_routes=routes%2Floaders%2Flist-models',
   conversations: '/loaders/list-conversations.data?_routes=routes%2Floaders%2Flist-converstaions',
+  profile: '/settings/profile.data?_routes=routes%2Fsettings%2Fprofile',
+  settings: '/settings.data?_routes=routes%2Fsettings',
 };
 
 // list-models carries no field separating chat models from image/video/audio
@@ -473,6 +475,86 @@ async function loadConversations() {
   list.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   conversationList = list;
   return list;
+}
+
+let profileCache = { at: 0, profile: null };
+const PROFILE_TTL_MS = 60_000;
+
+async function fetchUserProfile({ force = false } = {}) {
+  if (!force && profileCache.profile && Date.now() - profileCache.at < PROFILE_TTL_MS) {
+    return profileCache.profile;
+  }
+  if (!extClients.size && !getCookie()) {
+    return {
+      name: 'Guest / Offline',
+      email: 'No session linked',
+      plan: 'Offline',
+      credits: '0',
+      directMode: false,
+    };
+  }
+
+  const profileLoaders = [
+    LOADERS.profile,
+    LOADERS.settings,
+    '/settings/profile.data',
+    '/settings.data',
+    '/loaders/user-profile.data',
+  ];
+
+  let email = null;
+  let name = null;
+  let plan = 'Free';
+  let credits = null;
+  let quota = null;
+  let points = null;
+
+  for (const endpoint of profileLoaders) {
+    try {
+      const raw = await fetchLoader(endpoint, 10_000);
+      if (!raw) continue;
+      const decoded = decodeTurboStream(raw);
+      if (!decoded) continue;
+
+      const walk = (v) => {
+        if (Array.isArray(v)) return v.forEach(walk);
+        if (!v || typeof v !== 'object') return;
+        if (typeof v.email === 'string' && v.email.includes('@')) email = v.email;
+        if (typeof v.name === 'string' && v.name.length > 1) name = v.name;
+        if (typeof v.displayName === 'string' && !name) name = v.displayName;
+        if (typeof v.username === 'string' && !name) name = v.username;
+        if (typeof v.plan === 'string') plan = v.plan;
+        if (typeof v.tier === 'string') plan = v.tier;
+        if (typeof v.subscriptionTier === 'string') plan = v.subscriptionTier;
+        if (typeof v.credits === 'number') credits = v.credits;
+        if (typeof v.balance === 'number') credits = v.balance;
+        if (typeof v.points === 'number') points = v.points;
+        if (typeof v.quota === 'number' || typeof v.quota === 'object') quota = v.quota;
+        Object.values(v).forEach(walk);
+      };
+      walk(decoded);
+
+      if (email || name || credits != null || points != null) break;
+    } catch {}
+  }
+
+  // Count available models & free models
+  const models = cachedModels();
+  const freeModels = models.filter((m) => m.free).length;
+
+  const result = {
+    name: name || (email ? email.split('@')[0] : 'AIPass User'),
+    email: email || 'Connected Account',
+    plan: plan || 'Active Plan',
+    credits: credits ?? points ?? (freeModels > 0 ? `${freeModels} Free Models Active` : 'Available'),
+    quota: quota ?? null,
+    totalModels: models.length,
+    freeModels,
+    directMode: Boolean(getCookie()),
+  };
+
+  profileCache = { at: Date.now(), profile: result };
+  return result;
 }
 
 function findValue(node, key) {
@@ -1252,6 +1334,11 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (path === '/profile' || path === '/user' || path === '/quota') {
+      const profile = await fetchUserProfile({ force: url.searchParams.get('refresh') === '1' });
+      return json(res, 200, { ok: true, profile });
+    }
+
     if (path === '/conversations/new' && req.method === 'POST') {
       const body = JSON.parse(await readBody(req) || '{}');
       const id = await createConversation({ modelId: body.model, message: body.message, assistant: body.assistant });
@@ -1380,6 +1467,30 @@ function renderDashboardHtml() {
         <i data-lucide="plus" class="w-3.5 h-3.5"></i>
         <span>New Chat</span>
       </button>
+    </div>
+
+    <!-- User Profile & Quota Card -->
+    <div class="px-3 py-2.5 border-b border-zinc-800 bg-zinc-950/60 space-y-2">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2 overflow-hidden">
+          <div id="user-avatar" class="h-6 w-6 rounded-full bg-gradient-to-tr from-purple-500 to-indigo-500 flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow">
+            AI
+          </div>
+          <div class="overflow-hidden">
+            <div id="user-name" class="text-xs font-semibold text-zinc-200 truncate">Loading user...</div>
+            <div id="user-email" class="text-[10px] text-zinc-500 truncate font-mono">--</div>
+          </div>
+        </div>
+        <span id="user-plan" class="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-medium text-purple-400 border border-purple-500/20 shrink-0">Active</span>
+      </div>
+
+      <div class="flex items-center justify-between bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-zinc-800/80">
+        <div class="flex items-center gap-1.5">
+          <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i>
+          <span class="text-[11px] text-zinc-400">Credits / Quota:</span>
+        </div>
+        <span id="user-credits" class="text-[11px] font-mono font-semibold text-emerald-400">--</span>
+      </div>
     </div>
 
     <!-- Search -->
@@ -1759,10 +1870,27 @@ function renderDashboardHtml() {
       }
     };
 
+    async function loadUserProfile() {
+      try {
+        const res = await fetch(\`\${BASE_URL}/profile\`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const p = data.profile;
+        if (p) {
+          document.getElementById('user-name').innerText = p.name || 'AIPass User';
+          document.getElementById('user-email').innerText = p.email || 'Active Session';
+          document.getElementById('user-plan').innerText = p.plan || 'Active';
+          document.getElementById('user-credits').innerText = typeof p.credits === 'number' ? \`\${p.credits} Pts\` : p.credits;
+          document.getElementById('user-avatar').innerText = (p.name || 'AI').slice(0, 2).toUpperCase();
+        }
+      } catch {}
+    }
+
     document.getElementById('btn-refresh').onclick = () => {
       loadStatus();
       loadModels();
       loadConversations();
+      loadUserProfile();
     };
 
     function escapeHtml(str) {
@@ -1773,7 +1901,9 @@ function renderDashboardHtml() {
     loadStatus();
     loadModels();
     loadConversations();
+    loadUserProfile();
     setInterval(loadStatus, 5000);
+    setInterval(loadUserProfile, 30000);
   </script>
 </body>
 </html>`;
