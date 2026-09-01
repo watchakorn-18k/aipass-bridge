@@ -524,6 +524,146 @@ function startChat({ modelId, text, onDelta, onDone, onError }) {
   return { abort: () => current?.abort() };
 }
 
+/* ----------------------------------------------------------- tool emulation */
+
+function formatToolsPrompt(tools, functions, tool_choice) {
+  const list = [];
+  if (Array.isArray(tools)) {
+    for (const t of tools) {
+      if (t.type === 'function' && t.function) list.push(t.function);
+      else if (t.name) list.push(t);
+    }
+  }
+  if (Array.isArray(functions)) {
+    for (const f of functions) {
+      if (f.name) list.push(f);
+    }
+  }
+  if (!list.length || tool_choice === 'none') return '';
+
+  const toolDefs = list.map((fn) => JSON.stringify({
+    name: fn.name,
+    description: fn.description || '',
+    parameters: fn.parameters || { type: 'object', properties: {} },
+  }, null, 2)).join('\n');
+
+  return `[TOOLS INSTRUCTION]
+You have access to the following functions/tools:
+${toolDefs}
+
+If you decide to invoke a tool, respond ONLY with a JSON code block in this exact format:
+\`\`\`json
+{
+  "name": "function_name",
+  "arguments": { ... }
+}
+\`\`\`
+If no tool call is needed, reply normally.
+[/TOOLS INSTRUCTION]`;
+}
+
+function parseToolCallsFromOutput(text, tools, functions) {
+  if (!text) return null;
+  const toolNames = new Set([
+    ...(tools ?? []).map((t) => t.function?.name ?? t.name).filter(Boolean),
+    ...(functions ?? []).map((f) => f.name).filter(Boolean),
+  ]);
+
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+  let match;
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const raw = match[1].trim();
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].name) {
+        return {
+          textWithoutTool: text.replace(match[0], '').trim(),
+          tool_calls: parsed.map((item) => ({
+            id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            type: 'function',
+            function: {
+              name: item.name,
+              arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? {}),
+            },
+          })),
+        };
+      }
+      if (parsed && typeof parsed === 'object' && parsed.name) {
+        if (!toolNames.size || toolNames.has(parsed.name)) {
+          return {
+            textWithoutTool: text.replace(match[0], '').trim(),
+            tool_calls: [{
+              id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+              type: 'function',
+              function: {
+                name: parsed.name,
+                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments ?? {}),
+              },
+            }],
+          };
+        }
+      }
+    } catch {}
+  }
+
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && parsed.name) {
+        if (!toolNames.size || toolNames.has(parsed.name)) {
+          return {
+            textWithoutTool: '',
+            tool_calls: [{
+              id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+              type: 'function',
+              function: {
+                name: parsed.name,
+                arguments: typeof parsed.arguments === 'string' ? parsed.arguments : JSON.stringify(parsed.arguments ?? {}),
+              },
+            }],
+          };
+        }
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+function buildUserPrompt(messages, tools, functions, tool_choice) {
+  const toolsPrompt = formatToolsPrompt(tools, functions, tool_choice);
+
+  const systemTexts = (messages ?? [])
+    .filter((m) => m.role === 'system')
+    .map((m) => (typeof m.content === 'string' ? m.content : (m.content ?? []).map((p) => p.text ?? '').join('')))
+    .join('\n\n');
+
+  const toolResults = (messages ?? [])
+    .filter((m) => m.role === 'tool' || m.role === 'function')
+    .map((m) => {
+      const id = m.tool_call_id ? `[Tool ID: ${m.tool_call_id}] ` : '';
+      const name = m.name ? `[Function: ${m.name}] ` : '';
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      return `${id}${name}Result: ${content}`;
+    });
+
+  const userTexts = (messages ?? [])
+    .filter((m) => m.role === 'user')
+    .map((m) => (typeof m.content === 'string'
+      ? m.content
+      : (m.content ?? []).map((p) => (p?.type === 'text' ? p.text : '')).join('')));
+
+  const latestUser = userTexts.at(-1)?.trim() ?? '';
+  const parts = [];
+  if (toolsPrompt) parts.push(toolsPrompt);
+  if (systemTexts) parts.push(`[System Instructions]\n${systemTexts}`);
+  if (toolResults.length) parts.push(`[Previous Tool Results]\n${toolResults.join('\n\n')}`);
+  if (latestUser) parts.push(latestUser);
+
+  return parts.join('\n\n');
+}
+
 // Only the newest user message is sent. The server holds the history, and a
 // messages array containing an assistant turn is rejected upstream.
 function lastUserText(messages) {
@@ -572,12 +712,18 @@ async function chatCompletions(req, res) {
   catch { return oaiError(res, 400, 'invalid JSON body'); }
 
   const model = String(payload.model ?? defaultModel).replace(/^aipass\//, '');
-  const text = lastUserText(payload.messages);
+  const hasTools = (Array.isArray(payload.tools) && payload.tools.length > 0) ||
+                   (Array.isArray(payload.functions) && payload.functions.length > 0);
+
+  const text = hasTools
+    ? buildUserPrompt(payload.messages, payload.tools, payload.functions, payload.tool_choice ?? payload.function_call)
+    : lastUserText(payload.messages);
+
   if (!text) return oaiError(res, 400, 'no user message');
 
   const id = `chatcmpl-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
   const created = Math.floor(Date.now() / 1000);
-  log(`chat -> ${model} (${Buffer.byteLength(text)} bytes)`);
+  log(`chat -> ${model} (${Buffer.byteLength(text)} bytes)${hasTools ? ' [tools enabled]' : ''}`);
 
   if (payload.stream) {
     res.writeHead(200, {
@@ -595,6 +741,7 @@ async function chatCompletions(req, res) {
     };
     emit({ role: 'assistant', content: '' });
 
+    let fullOutput = '';
     const job = startChat({
       modelId: model, text,
       onDelta: (part) => {
@@ -604,11 +751,34 @@ async function chatCompletions(req, res) {
           else emit({ reasoning_content: `${part.text}\n` });
           return;
         }
-        if (part.kind === 'reasoning') emit({ reasoning_content: part.text });
-        else emit({ content: part.text });
+        if (part.kind === 'reasoning') {
+          emit({ reasoning_content: part.text });
+        } else {
+          fullOutput += part.text;
+          if (!hasTools) emit({ content: part.text });
+        }
       },
       onDone: (finishReason) => {
-        emit({}, finishReason === 'length' ? 'length' : 'stop');
+        if (hasTools) {
+          const toolResult = parseToolCallsFromOutput(fullOutput, payload.tools, payload.functions);
+          if (toolResult && toolResult.tool_calls.length) {
+            emit({
+              role: 'assistant',
+              content: toolResult.textWithoutTool || null,
+              tool_calls: toolResult.tool_calls.map((tc, idx) => ({
+                index: idx,
+                id: tc.id,
+                type: 'function',
+                function: tc.function,
+              })),
+            }, 'tool_calls');
+          } else {
+            if (fullOutput) emit({ content: fullOutput });
+            emit({}, finishReason === 'length' ? 'length' : 'stop');
+          }
+        } else {
+          emit({}, finishReason === 'length' ? 'length' : 'stop');
+        }
         res.write('data: [DONE]\n\n');
         res.end();
       },
@@ -633,21 +803,41 @@ async function chatCompletions(req, res) {
         else out += p.text;
       },
       onDone: (finishReason) => {
-        json(res, 200, {
-          id, object: 'chat.completion', created, model,
-          choices: [{
-            index: 0,
-            message: { role: 'assistant', content: out, ...(reasoning ? { reasoning_content: reasoning } : {}) },
-            finish_reason: finishReason === 'length' ? 'length' : 'stop',
-          }],
-          // Estimates: the upstream stream reports no token counts, but some
-          // clients refuse a response without a usage block.
-          usage: {
-            prompt_tokens: Math.ceil(text.length / 4),
-            completion_tokens: Math.ceil(out.length / 4),
-            total_tokens: Math.ceil((text.length + out.length) / 4),
-          },
-        });
+        const toolResult = hasTools ? parseToolCallsFromOutput(out, payload.tools, payload.functions) : null;
+        if (toolResult && toolResult.tool_calls.length) {
+          json(res, 200, {
+            id, object: 'chat.completion', created, model,
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: toolResult.textWithoutTool || null,
+                tool_calls: toolResult.tool_calls,
+                ...(reasoning ? { reasoning_content: reasoning } : {}),
+              },
+              finish_reason: 'tool_calls',
+            }],
+            usage: {
+              prompt_tokens: Math.ceil(text.length / 4),
+              completion_tokens: Math.ceil(out.length / 4),
+              total_tokens: Math.ceil((text.length + out.length) / 4),
+            },
+          });
+        } else {
+          json(res, 200, {
+            id, object: 'chat.completion', created, model,
+            choices: [{
+              index: 0,
+              message: { role: 'assistant', content: out, ...(reasoning ? { reasoning_content: reasoning } : {}) },
+              finish_reason: finishReason === 'length' ? 'length' : 'stop',
+            }],
+            usage: {
+              prompt_tokens: Math.ceil(text.length / 4),
+              completion_tokens: Math.ceil(out.length / 4),
+              total_tokens: Math.ceil((text.length + out.length) / 4),
+            },
+          });
+        }
         resolve();
       },
       onError: (message) => { oaiError(res, 502, message, 'upstream_error'); resolve(); },
