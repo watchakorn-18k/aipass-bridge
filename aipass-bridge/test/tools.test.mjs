@@ -27,7 +27,7 @@ async function readStream(res) {
 test('emulates function calling in non-streaming response', async () => {
   const ext = await new FakeExtension(bridge.base, {
     onChat: async (job, e) => {
-      assert.match(job.text, /# Available Tools/);
+      assert.match(job.text, /# Available Editor Tools/);
       assert.match(job.text, /get_weather/);
       await e.text('```json\n{\n  "name": "get_weather",\n  "arguments": {"location": "Bangkok"}\n}\n```');
       await e.done();

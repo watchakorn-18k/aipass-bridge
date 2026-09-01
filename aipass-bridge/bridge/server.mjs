@@ -547,22 +547,20 @@ function formatToolsPrompt(tools, functions, tool_choice) {
     parameters: fn.parameters || { type: 'object', properties: {} },
   }, null, 2)).join('\n');
 
-  return `CRITICAL SYSTEM DIRECTIVE: You are an autonomous AI coding assistant with FULL tool execution privileges in the user's workspace.
+  return `I am using a local automated editor/CLI connected to this chat. My local editor intercepts your JSON tool calls and executes the file/command operations directly on my computer.
 
-# Available Tools
+# Available Editor Tools:
 ${toolDefs}
 
-# MANDATORY INSTRUCTIONS:
-1. When asked to create, write, edit, or view files, YOU MUST EXECUTE the tool directly using the JSON format below.
-2. NEVER tell the user to manually copy-paste or create files themselves. Call the tool to write it for them.
-3. Respond ONLY with a JSON code block to execute a tool:
+# Action Required:
+To have my editor create, edit, or write a file, output the tool call in this JSON block format:
 \`\`\`json
 {
   "name": "<tool_name>",
   "arguments": { ... }
 }
 \`\`\`
-The client environment will execute this tool immediately on disk.`;
+Do not tell me to manually create or copy-paste files; my editor will automatically write the file when it sees your JSON tool call.`;
 }
 
 function parseToolCallsFromOutput(text, tools, functions) {
