@@ -180,10 +180,157 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'reconnect') { controller?.abort(); connect(); sendResponse({ ok: true }); return true; }
 });
 
+// Register Context Menus
+function setupContextMenus() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'aipass_summarize',
+      title: '✨ AIPass: Summarize this page',
+      contexts: ['page', 'selection'],
+    });
+    chrome.contextMenus.create({
+      id: 'aipass_extract_code',
+      title: '💻 AIPass: Extract Code & Data',
+      contexts: ['page', 'selection'],
+    });
+    chrome.contextMenus.create({
+      id: 'aipass_convert_api',
+      title: '⚡ AIPass: Convert page to REST API / JSON',
+      contexts: ['page', 'selection'],
+    });
+    chrome.contextMenus.create({
+      id: 'aipass_explain',
+      title: '🔍 AIPass: Explain selection',
+      contexts: ['selection'],
+    });
+  });
+}
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab?.id) return;
+
+  let actionTitle = 'Analyzing';
+  let promptPrefix = 'Please analyze this page:';
+
+  if (info.menuItemId === 'aipass_summarize') {
+    actionTitle = 'Summarize';
+    promptPrefix = 'Please provide a concise, high-impact summary of this content with key bullet points and conclusions in Thai/English:';
+  } else if (info.menuItemId === 'aipass_extract_code') {
+    actionTitle = 'Extract Code';
+    promptPrefix = 'Please extract all programming code blocks, API endpoints, data models, or structured tables from this content:';
+  } else if (info.menuItemId === 'aipass_convert_api') {
+    actionTitle = 'Convert to API';
+    promptPrefix = 'Please convert the data and structure of this page into a clean JSON REST API schema and sample response:';
+  } else if (info.menuItemId === 'aipass_explain') {
+    actionTitle = 'Explain';
+    promptPrefix = 'Please explain this selected text clearly and provide context and practical examples:';
+  }
+
+  // Inject overlay into the active tab
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['overlay.js'],
+    });
+
+    // Extract text
+    let targetText = info.selectionText || '';
+    if (!targetText) {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => document.body.innerText.slice(0, 15000),
+      });
+      targetText = result || '';
+    }
+
+    // Set initial loading state in overlay
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (tag) => window.__aipassSetOverlay?.(tag, 'Sending request to AIPass Bridge...'),
+      args: [actionTitle],
+    });
+
+    // Stream from Bridge
+    const bUrl = await bridgeUrl();
+    const res = await fetch(`${bUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gemini-3.1-flash-lite',
+        messages: [{ role: 'user', content: `${promptPrefix}\n\n"""\n${targetText}\n"""` }],
+        stream: true,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (tag, msg) => window.__aipassSetOverlay?.(tag, `Error (${res.status}): ${msg}`, true),
+        args: [actionTitle, errText || res.statusText],
+      });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let accumulated = '';
+    let pending = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(dataStr);
+          const delta = parsed.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            accumulated += delta;
+            chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: (tag, text) => window.__aipassSetOverlay?.(tag, text, false),
+              args: [actionTitle, accumulated],
+            }).catch(() => {});
+          }
+        } catch {}
+      }
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (tag, text) => window.__aipassSetOverlay?.(tag, text, true),
+      args: [actionTitle, accumulated || 'No response returned.'],
+    });
+  } catch (err) {
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (tag, err) => window.__aipassSetOverlay?.(tag, `Error: ${err}`, true),
+      args: [actionTitle, String(err?.message ?? err)],
+    }).catch(() => {});
+  }
+});
+
 // The worker can be evicted at any time; the alarm brings it back and the
 // connect() guard makes a duplicate call harmless.
 chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => connect());
-chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => connect());
+chrome.runtime.onStartup.addListener(() => {
+  setupContextMenus();
+  connect();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  setupContextMenus();
+  connect();
+});
 connect();
+

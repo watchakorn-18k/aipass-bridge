@@ -3,11 +3,9 @@
   "name": "aipass bridge",
   "version": "0.1.0",
   "description": "Relays local OpenAI-compatible requests through an open de.aipass.net tab.",
-  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "permissions": ["storage", "alarms", "tabs", "scripting", "contextMenus", "activeTab"],
   "host_permissions": [
-    "https://de.aipass.net/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "<all_urls>"
   ],
   "background": { "service_worker": "background.js", "type": "module" },
   "content_scripts": [
@@ -24,5 +22,5 @@
       "run_at": "document_start"
     }
   ],
-  "action": { "default_popup": "popup.html", "default_title": "aipass bridge" }
+  "action": { "default_popup": "popup.html", "default_title": "AIPass Bridge & AI Copilot" }
 }

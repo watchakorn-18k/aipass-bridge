@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-let bridge = 'http://127.0.0.1:8787';
+let bridge = 'http://157.85.96.7:8787';
 let lastModelSignature = '';
 
 async function bridgeStatus(refresh = false) {
@@ -14,8 +14,28 @@ async function bridgeStatus(refresh = false) {
   }
 }
 
+async function loadQuota() {
+  try {
+    const res = await fetch(`${bridge}/profile`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    const p = data.profile;
+    if (p) {
+      if (p.plan) $('user-plan').textContent = p.plan;
+      if (p.credits) {
+        const avail = typeof p.credits === 'object' ? p.credits.available : p.credits;
+        $('quota-val').textContent = typeof avail === 'number' ? avail.toLocaleString() : avail;
+        if (typeof p.credits === 'object') {
+          $('quota-detail').textContent = `Used: ${p.credits.used ?? '--'} / Limit: ${p.credits.limit ?? '--'}`;
+          const bar = $('quota-bar');
+          if (bar) bar.style.width = `${p.credits.availablePercent ?? 100}%`;
+        }
+      }
+    }
+  } catch {}
+}
+
 function renderModels(models, selected) {
-  // Rebuilding on every poll would fight the user mid-selection.
   const signature = `${models.map((m) => `${m.id}${m.free}`).join('|')}::${selected}`;
   if (signature === lastModelSignature) return;
   lastModelSignature = signature;
@@ -25,8 +45,8 @@ function renderModels(models, selected) {
   for (const m of models) {
     const opt = document.createElement('option');
     opt.value = m.id;
-    const tags = [m.free ? 'free' : null, m.thinking ? 'thinking' : null].filter(Boolean);
-    opt.textContent = `${m.name || m.id}${m.provider ? ` — ${m.provider}` : ''}${tags.length ? `  [${tags.join(', ')}]` : ''}`;
+    const tags = [m.free ? 'Free' : null, m.thinking ? 'Thinking' : null].filter(Boolean);
+    opt.textContent = `${m.name || m.id}${tags.length ? ` [${tags.join(', ')}]` : ''}`;
     opt.selected = m.id === selected;
     sel.append(opt);
   }
@@ -41,18 +61,23 @@ function renderModels(models, selected) {
 }
 
 async function refresh(forceModels = false) {
-  const sw = await chrome.runtime.sendMessage({ type: 'status' });
-  bridge = sw.bridgeUrl;
-  $('conn').innerHTML =
-    `<span class="dot ${sw.connected ? 'up' : 'down'}"></span>${sw.connected ? 'connected' : 'not connected'}`;
-  $('tab').textContent = sw.tab ? new URL(sw.tab.url).pathname : 'none open';
-  $('jobs').textContent = String(sw.activeJobs);
-  if (document.activeElement !== $('url')) $('url').value = sw.bridgeUrl;
+  const sw = await chrome.runtime.sendMessage({ type: 'status' }).catch(() => ({}));
+  if (sw && sw.bridgeUrl) bridge = sw.bridgeUrl;
+
+  const isConnected = Boolean(sw?.connected);
+  $('conn-dot').className = `h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`;
+  $('conn-text').textContent = isConnected ? 'Connected' : 'Offline';
+
+  if (document.activeElement !== $('url')) $('url').value = bridge;
 
   const status = await bridgeStatus(forceModels);
-  if (status) renderModels(status.models ?? [], status.defaultModel);
+  if (status) {
+    renderModels(status.models ?? [], status.defaultModel);
+    loadQuota();
+  }
 
-  $('err').textContent = sw.lastError || (status ? '' : 'bridge not reachable — is server.mjs running?');
+  $('err').textContent = sw?.lastError || (status ? '' : 'Bridge not reachable. Please check your VPS or server.mjs.');
+  if (window.lucide) window.lucide.createIcons();
 }
 
 $('model').addEventListener('change', async () => {
@@ -71,5 +96,26 @@ $('save').addEventListener('click', async () => {
 
 $('refresh').addEventListener('click', () => refresh(true));
 
+$('btn-open-dash').addEventListener('click', () => {
+  chrome.tabs.create({ url: `${bridge}/dashboard` });
+});
+
+// Quick Action: Summarize Current Tab
+$('btn-qa-summarize').addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  chrome.tabs.sendMessage(tab.id, { type: 'trigger_action', action: 'summarize' }).catch(() => {});
+  window.close();
+});
+
+// Quick Action: Extract Code from Tab
+$('btn-qa-code').addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  chrome.tabs.sendMessage(tab.id, { type: 'trigger_action', action: 'code' }).catch(() => {});
+  window.close();
+});
+
 refresh(true);
-setInterval(() => refresh(false), 1500);
+setInterval(() => refresh(false), 2000);
+if (window.lucide) window.lucide.createIcons();
