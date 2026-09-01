@@ -1,6 +1,6 @@
 # 🚀 AIPass Bridge
 
-Turn [de.aipass.net](https://de.aipass.net/chat) into an **OpenAI-Compatible AI Bridge Server** with real-time SSE streaming, server-side web search, automatic token keep-alive, and an autonomous coding agent.
+An open-source developer interoperability proxy and local API gateway for authorized personal sessions on [de.aipass.net](https://de.aipass.net/chat), providing standard OpenAI-compatible endpoints, real-time SSE streaming, and terminal utilities.
 
 ---
 
@@ -206,6 +206,16 @@ npm test
 
 ---
 
+## ⚖️ Disclaimer & Compliance
+
+- **Educational & Interoperability Purposes:** This project is an independent, open-source developer tool created solely for research, accessibility, and local interoperability purposes.
+- **No Affiliation:** This project is not affiliated with, endorsed by, maintained by, or in any way officially connected with AIPass, DEPA, or any of their subsidiaries or affiliates.
+- **User Responsibility:** Users are strictly responsible for their own account usage and ensuring compliance with the applicable Terms of Service and local laws of any platform they interact with.
+- **Privacy & Security:** This software does not collect, track, or forward user credentials, session tokens, or private data to any third-party servers. All communications remain strictly between your local client and your own authenticated session.
+
+---
+
 ## 📄 License
 MIT
+
 
