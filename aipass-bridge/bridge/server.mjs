@@ -108,6 +108,44 @@ function setCookie(cookie) {
   } catch {}
 }
 
+function updateCookiesFromResponse(res) {
+  const setCookies = typeof res.headers?.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : [res.headers?.get('set-cookie')].filter(Boolean);
+
+  if (!setCookies.length) return;
+
+  const current = getCookie();
+  const map = new Map();
+
+  for (const part of current.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx > 0) map.set(trimmed.slice(0, idx).trim(), trimmed.slice(idx + 1).trim());
+  }
+
+  let updated = false;
+  for (const sc of setCookies) {
+    const firstPart = sc.split(';')[0].trim();
+    const idx = firstPart.indexOf('=');
+    if (idx > 0) {
+      const k = firstPart.slice(0, idx).trim();
+      const v = firstPart.slice(idx + 1).trim();
+      if (map.get(k) !== v) {
+        map.set(k, v);
+        updated = true;
+      }
+    }
+  }
+
+  if (updated) {
+    const nextCookie = [...map.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+    setCookie(nextCookie);
+    log('auto-refreshed session cookie from upstream response');
+  }
+}
+
 async function runDirect(job) {
   const cookie = getCookie();
   if (!cookie) {
@@ -126,6 +164,7 @@ async function runDirect(job) {
       const res = await fetch(`${AIPASS_ORIGIN}${job.url}`, {
         headers: { ...commonHeaders, accept: '*/*' },
       });
+      updateCookiesFromResponse(res);
       if (!res.ok) throw new Error(`aipass returned ${res.status} ${res.statusText}`);
       job.done(await res.text());
     } catch (err) {
@@ -152,6 +191,7 @@ async function runDirect(job) {
         },
         body: params.toString(),
       });
+      updateCookiesFromResponse(res);
       if (!res.ok) throw new Error(`aipass returned ${res.status} ${res.statusText}`);
       job.done(await res.text());
     } catch (err) {
@@ -186,6 +226,7 @@ async function runDirect(job) {
         body,
         signal: controller.signal,
       });
+      updateCookiesFromResponse(res);
 
       if (!res.ok) {
         const detail = (await res.text().catch(() => '')).slice(0, 300);
@@ -759,3 +800,22 @@ server.listen(PORT, HOST, () => {
     log('  waiting for Chrome extension or AIPASS_COOKIE…');
   }
 });
+
+// Periodic Keep-Alive Heartbeat (every 30 mins) to auto-refresh sliding session
+setInterval(async () => {
+  if (!getCookie()) return;
+  try {
+    const res = await fetch(`${AIPASS_ORIGIN}/loaders/list-models.data?_routes=routes%2Floaders%2Flist-models`, {
+      headers: {
+        cookie: getCookie(),
+        accept: '*/*',
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+        referer: `${AIPASS_ORIGIN}/chat`,
+      },
+    });
+    updateCookiesFromResponse(res);
+  } catch (err) {
+    log('keep-alive ping error:', err.message);
+  }
+}, 30 * 60 * 1000);
+
