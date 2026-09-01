@@ -657,25 +657,72 @@ function parseToolCallsFromOutput(text, tools, functions) {
     };
   }
 
-  // Automatic Codeblock Extraction: If model provided a code block and a write tool exists
+  // Comprehensive programming language to default filename mapping
+  const LANG_TO_EXT = {
+    python: 'main.py', py: 'main.py',
+    javascript: 'index.js', js: 'index.js', mjs: 'index.mjs', cjs: 'index.cjs',
+    typescript: 'index.ts', ts: 'index.ts',
+    tsx: 'App.tsx', jsx: 'App.jsx',
+    html: 'index.html', htm: 'index.html',
+    css: 'style.css', scss: 'style.scss', sass: 'style.sass', less: 'style.less',
+    golang: 'main.go', go: 'main.go',
+    rust: 'main.rs', rs: 'main.rs',
+    java: 'Main.java',
+    kotlin: 'Main.kt', kt: 'Main.kt',
+    php: 'index.php',
+    c: 'main.c',
+    cpp: 'main.cpp', 'c++': 'main.cpp', h: 'main.h', hpp: 'main.hpp',
+    csharp: 'Program.cs', cs: 'Program.cs',
+    swift: 'main.swift',
+    dart: 'main.dart',
+    ruby: 'main.rb', rb: 'main.rb',
+    sql: 'schema.sql',
+    bash: 'script.sh', sh: 'script.sh', shell: 'script.sh', zsh: 'script.sh',
+    powershell: 'script.ps1', ps1: 'script.ps1',
+    json: 'data.json',
+    yaml: 'config.yaml', yml: 'config.yaml',
+    toml: 'config.toml',
+    xml: 'data.xml',
+    dockerfile: 'Dockerfile',
+    markdown: 'README.md', md: 'README.md',
+  };
+
+  // Automatic Multi-File Codeblock Extraction for ALL programming languages
   const writeToolName = [...toolNames].find((n) => /write|create|file|editor/i.test(n));
   if (writeToolName) {
-    const codeBlockMatch = text.match(/```(?:[a-zA-Z0-9_\-\.]+)?\r?\n([\s\S]+?)\r?\n```/);
-    if (codeBlockMatch && codeBlockMatch[1].trim().length > 20) {
-      // Search for filename in text (e.g. index.html, style.css, app.js, oop_example.py)
-      const fileMatch = text.match(/(?:ไฟล์|file|ชื่อ|named|path|to)\s*[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/i)
-                     || text.match(/[`'"]([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,5})[`'"]/);
-      const targetFile = fileMatch ? fileMatch[1] : 'index.html';
+    const codeBlockGlobalRegex = /```([a-zA-Z0-9_\-\.\+]+)?\r?\n([\s\S]+?)\r?\n```/g;
+    const toolCalls = [];
+    let textWithoutTool = text;
+    let blockMatch;
+
+    while ((blockMatch = codeBlockGlobalRegex.exec(text)) !== null) {
+      const langTag = (blockMatch[1] || '').trim().toLowerCase();
+      const codeContent = blockMatch[2];
+      if (codeContent.trim().length < 15) continue;
+
+      // Extract filename from header or preceding text
+      const sliceBefore = text.slice(Math.max(0, blockMatch.index - 150), blockMatch.index);
+      const fileMatch = sliceBefore.match(/(?:ไฟล์|file|ชื่อ|named|path|to|in|create|write)\s*[`'"]?([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]+)[`'"]?/i)
+                     || sliceBefore.match(/[`'"]([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9]{1,6})[`'"]/);
+
+      let targetFile = fileMatch ? fileMatch[1] : (LANG_TO_EXT[langTag] || (langTag ? `file.${langTag}` : 'index.html'));
+
+      toolCalls.push({
+        id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+        type: 'function',
+        function: {
+          name: writeToolName,
+          arguments: normalizeToolArguments(writeToolName, { path: targetFile, content: codeContent }, tools, functions),
+        },
+      });
+
+      textWithoutTool = textWithoutTool.replace(blockMatch[0], '').trim();
+    }
+
+    if (toolCalls.length > 0) {
       return {
-        textWithoutTool: text.replace(codeBlockMatch[0], '').trim(),
-        tool_calls: [{
-          id: `call_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-          type: 'function',
-          function: {
-            name: writeToolName,
-            arguments: normalizeToolArguments(writeToolName, { path: targetFile, content: codeBlockMatch[1] }, tools, functions),
-          },
-        }],
+        textWithoutTool,
+        tool_calls: toolCalls,
       };
     }
   }
