@@ -217,16 +217,22 @@ async function executePageAction(action, tabId, selectionText = '') {
 
   if (action === 'summarize' || action === 'aipass_summarize') {
     actionTitle = 'Summarize';
-    promptPrefix = 'Please provide a concise, high-impact summary of this content with key bullet points and conclusions in Thai/English:';
+    promptPrefix = `You are an expert concise analyst. Follow the strict Stop-Slop (Anti-AI Slop) guidelines:
+1. NO throat-clearing openers (Do NOT start with "สรุปข้อมูลจากเนื้อหาที่ให้มาครับ:", "Here is the summary:", or "In summary:"). Start immediately with the first key fact or point.
+2. NO conversational padding, filler phrases, or helpful sign-off questions at the end (Do NOT say "คุณต้องการให้ผมช่วยอะไรเพิ่มเติมไหมครับ?").
+3. Be direct, specific, and fact-focused. Use active voice and concrete specifics (exact names, numbers, salaries, dates, locations, requirements).
+4. Organize into crisp Markdown headers and bullet points.
+
+Provide a high-impact, direct summary of the following content:`;
   } else if (action === 'code' || action === 'extract_code' || action === 'aipass_extract_code') {
     actionTitle = 'Extract Code';
-    promptPrefix = 'Please extract all programming code blocks, API endpoints, data models, or structured tables from this content:';
+    promptPrefix = `Extract all programming code blocks, API endpoints, data models, or structured tables from this content. Return ONLY the extracted code and clean Markdown tables without filler prose:`;
   } else if (action === 'convert_api' || action === 'aipass_convert_api') {
     actionTitle = 'Convert to API';
-    promptPrefix = 'Please convert the data and structure of this page into a clean JSON REST API schema and sample response:';
+    promptPrefix = `Convert the data and structure of this page into a clean JSON REST API schema and sample response. Output ONLY the JSON/Schema without filler prose:`;
   } else if (action === 'explain' || action === 'aipass_explain') {
     actionTitle = 'Explain';
-    promptPrefix = 'Please explain this selected text clearly and provide context and practical examples:';
+    promptPrefix = `Explain this selected text directly and clearly with practical context, following Stop-Slop rules (no throat-clearing, direct facts only):`;
   }
 
   // 1. Inject overlay into the active tab

@@ -1004,6 +1004,16 @@ Rules:
 3. Do NOT wrap in explanation prose.`;
   }
 
+  const isSummarizeIntent = /(?:สรุป|summarize|summary|tl;?dr)/i.test(text);
+  if (isSummarizeIntent) {
+    return `${text}
+
+[System Directive: Stop-Slop Anti-AI Prose Guidelines]:
+1. NO throat-clearing openers (Never say "สรุปข้อมูลจาก...", "Here is the summary:", "In summary:"). Start immediately with the core factual points.
+2. NO conversational padding, filler, or follow-up sign-off questions (Never say "คุณต้องการให้ช่วยอะไรเพิ่มเติมไหมครับ?").
+3. Use active voice, crisp Markdown structure, and specific details (exact numbers, names, dates, requirements).`;
+  }
+
   return text;
 }
 
