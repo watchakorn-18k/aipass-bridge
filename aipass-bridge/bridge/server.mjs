@@ -1055,7 +1055,15 @@ async function chatCompletions(req, res) {
   try { payload = JSON.parse(await readBody(req)); }
   catch { return oaiError(res, 400, 'invalid JSON body'); }
 
-  const model = String(payload.model ?? defaultModel).replace(/^aipass\//, '');
+  let model = String(payload.model ?? defaultModel).replace(/^aipass\//, '');
+  if (model.includes('claude') || model.includes('gpt') || model.includes('opus')) {
+    const profile = profileCache.profile;
+    if (profile?.credits?.usedPercent >= 100 || profile?.credits?.available === '0.00' || profile?.credits?.available === 0) {
+      log(`credits exhausted (0.00), auto-falling back ${model} -> gemini-3.1-flash-lite`);
+      model = 'gemini-3.1-flash-lite';
+    }
+  }
+
   const hasTools = (Array.isArray(payload.tools) && payload.tools.length > 0) ||
                    (Array.isArray(payload.functions) && payload.functions.length > 0);
 
@@ -1202,6 +1210,14 @@ async function anthropicMessages(req, res) {
     model = 'claude-sonnet-5@default';
   } else if (model.startsWith('claude-3-opus') || model.startsWith('claude-opus')) {
     model = 'claude-opus-5@azure';
+  }
+
+  if (model.includes('claude') || model.includes('gpt') || model.includes('opus')) {
+    const profile = profileCache.profile;
+    if (profile?.credits?.usedPercent >= 100 || profile?.credits?.available === '0.00' || profile?.credits?.available === 0) {
+      log(`credits exhausted (0.00), auto-falling back ${model} -> gemini-3.1-flash-lite`);
+      model = 'gemini-3.1-flash-lite';
+    }
   }
 
   const tools = (payload.tools ?? []).map((t) => ({
