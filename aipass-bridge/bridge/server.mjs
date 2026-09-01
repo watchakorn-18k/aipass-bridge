@@ -478,7 +478,7 @@ async function loadConversations() {
 }
 
 let profileCache = { at: 0, profile: null };
-const PROFILE_TTL_MS = 60_000;
+const PROFILE_TTL_MS = 30_000;
 
 async function fetchUserProfile({ force = false } = {}) {
   if (!force && profileCache.profile && Date.now() - profileCache.at < PROFILE_TTL_MS) {
@@ -489,11 +489,61 @@ async function fetchUserProfile({ force = false } = {}) {
       name: 'Guest / Offline',
       email: 'No session linked',
       plan: 'Offline',
-      credits: '0',
+      credits: { available: '0', limit: '0', used: '0', usedPercent: 0 },
       directMode: false,
     };
   }
 
+  let email = null;
+  let name = null;
+  let plan = 'Free';
+  let creditStatus = null;
+  let videoQuota = null;
+  let deepResearchQuota = null;
+  let audioQuota = null;
+
+  // 1. Fetch real-time usage quota from official /loaders/get-usage-quota endpoint
+  try {
+    let quotaRaw = null;
+    const cookie = getCookie();
+    if (cookie) {
+      const qRes = await fetch(`${AIPASS_ORIGIN}/loaders/get-usage-quota`, {
+        headers: {
+          cookie,
+          'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+          referer: `${AIPASS_ORIGIN}/chat`,
+          accept: 'application/json, text/plain, */*',
+        },
+      });
+      updateCookiesFromResponse(qRes);
+      if (qRes.ok) {
+        const text = await qRes.text();
+        try { quotaRaw = JSON.parse(text); } catch { quotaRaw = decodeTurboStream(text); }
+      }
+    }
+    if (!quotaRaw) {
+      const qText = await fetchLoader('/loaders/get-usage-quota.data?_routes=routes%2Floaders%2Fget-usage-quota', 10_000);
+      if (qText) {
+        try { quotaRaw = JSON.parse(qText); } catch { quotaRaw = decodeTurboStream(qText); }
+      }
+    }
+
+    if (quotaRaw) {
+      const walkQuota = (v) => {
+        if (!v || typeof v !== 'object') return;
+        if (v.creditStatus) creditStatus = v.creditStatus;
+        if (v.videoQuotaStatus) videoQuota = v.videoQuotaStatus;
+        if (v.deepResearchQuotaStatus) deepResearchQuota = v.deepResearchQuotaStatus;
+        if (v.audioQuotaStatus) audioQuota = v.audioQuotaStatus;
+        if (v.credits && v.periodEndsAt) creditStatus = v;
+      };
+      walkQuota(quotaRaw);
+    }
+  } catch (err) {
+    log('quota fetch note:', err.message);
+  }
+
+  // 2. Fetch profile identity
   const profileLoaders = [
     LOADERS.profile,
     LOADERS.settings,
@@ -501,13 +551,6 @@ async function fetchUserProfile({ force = false } = {}) {
     '/settings.data',
     '/loaders/user-profile.data',
   ];
-
-  let email = null;
-  let name = null;
-  let plan = 'Free';
-  let credits = null;
-  let quota = null;
-  let points = null;
 
   for (const endpoint of profileLoaders) {
     try {
@@ -526,28 +569,59 @@ async function fetchUserProfile({ force = false } = {}) {
         if (typeof v.plan === 'string') plan = v.plan;
         if (typeof v.tier === 'string') plan = v.tier;
         if (typeof v.subscriptionTier === 'string') plan = v.subscriptionTier;
-        if (typeof v.credits === 'number') credits = v.credits;
-        if (typeof v.balance === 'number') credits = v.balance;
-        if (typeof v.points === 'number') points = v.points;
-        if (typeof v.quota === 'number' || typeof v.quota === 'object') quota = v.quota;
         Object.values(v).forEach(walk);
       };
       walk(decoded);
 
-      if (email || name || credits != null || points != null) break;
+      if (email || name) break;
     } catch {}
   }
 
-  // Count available models & free models
+  // 3. Compute exact numeric credit values
+  let availableNum = null;
+  let limitNum = null;
+  let usedNum = null;
+  let usedPercent = 0;
+  let periodEndsAt = null;
+
+  if (creditStatus?.credits) {
+    const decimals = creditStatus.creditsDecimals ?? 6;
+    const div = 10 ** decimals;
+    availableNum = Number(creditStatus.credits.available) / div;
+    limitNum = Number(creditStatus.credits.limit) / div;
+    usedNum = Number(creditStatus.credits.used) / div;
+    usedPercent = limitNum > 0 ? Math.min(100, Math.round((usedNum / limitNum) * 100)) : 0;
+    periodEndsAt = creditStatus.periodEndsAt;
+  }
+
   const models = cachedModels();
   const freeModels = models.filter((m) => m.free).length;
 
   const result = {
-    name: name || (email ? email.split('@')[0] : 'AIPass User'),
+    name: name || (email ? email.split('@')[0] : 'WK 18K'),
     email: email || 'Connected Account',
-    plan: plan || 'Active Plan',
-    credits: credits ?? points ?? (freeModels > 0 ? `${freeModels} Free Models Active` : 'Available'),
-    quota: quota ?? null,
+    plan: plan || 'Free Plan',
+    credits: {
+      available: availableNum != null ? availableNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : (freeModels > 0 ? `${freeModels} Free Models Active` : 'Available'),
+      limit: limitNum != null ? limitNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '10,000.00',
+      used: usedNum != null ? usedNum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00',
+      usedPercent,
+      availablePercent: Math.max(0, 100 - usedPercent),
+      periodEndsAt,
+      raw: creditStatus?.credits ?? null,
+    },
+    videoQuota: {
+      remaining: videoQuota?.count?.remaining ?? 10,
+      limit: videoQuota?.count?.limit ?? 10,
+    },
+    deepResearchQuota: {
+      remaining: deepResearchQuota?.count?.remaining ?? 10,
+      limit: deepResearchQuota?.count?.limit ?? 10,
+    },
+    audioQuota: {
+      remaining: audioQuota?.count?.remaining ?? 10,
+      limit: audioQuota?.count?.limit ?? 10,
+    },
     totalModels: models.length,
     freeModels,
     directMode: Boolean(getCookie()),
@@ -1497,27 +1571,55 @@ function renderDashboardHtml() {
       </button>
     </div>
 
-    <!-- User Profile & Quota Card -->
-    <div class="px-3 py-2.5 border-b border-zinc-800 bg-zinc-950/60 space-y-2">
+    <!-- User Profile & Real-Time Quota Card -->
+    <div class="px-3 py-3 border-b border-zinc-800 bg-zinc-950/70 space-y-2.5">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2 overflow-hidden">
-          <div id="user-avatar" class="h-6 w-6 rounded-full bg-gradient-to-tr from-purple-500 to-indigo-500 flex items-center justify-center text-[10px] font-bold text-white shrink-0 shadow">
-            AI
+          <div id="user-avatar" class="h-7 w-7 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-purple-600 flex items-center justify-center text-[11px] font-bold text-white shrink-0 shadow">
+            WK
           </div>
           <div class="overflow-hidden">
-            <div id="user-name" class="text-xs font-semibold text-zinc-200 truncate">Loading user...</div>
-            <div id="user-email" class="text-[10px] text-zinc-500 truncate font-mono">--</div>
+            <div id="user-name" class="text-xs font-semibold text-zinc-100 truncate">Loading user...</div>
+            <div id="user-email" class="text-[10px] text-zinc-400 truncate font-mono">--</div>
           </div>
         </div>
-        <span id="user-plan" class="rounded bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-medium text-purple-400 border border-purple-500/20 shrink-0">Active</span>
+        <span id="user-plan" class="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium text-blue-400 border border-blue-500/20 shrink-0">Free Plan</span>
       </div>
 
-      <div class="flex items-center justify-between bg-zinc-900/90 rounded-lg px-2.5 py-1.5 border border-zinc-800/80">
-        <div class="flex items-center gap-1.5">
-          <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i>
-          <span class="text-[11px] text-zinc-400">Credits / Quota:</span>
+      <!-- Credit Usage Bar -->
+      <div class="bg-zinc-900/90 rounded-xl p-2.5 border border-zinc-800/90 space-y-1.5 shadow-inner">
+        <div class="flex items-center justify-between text-[11px]">
+          <span class="text-zinc-400 flex items-center gap-1.5 font-medium">
+            <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span>Credits Available</span>
+          </span>
+          <span id="user-credits" class="font-mono font-bold text-emerald-400">--</span>
         </div>
-        <span id="user-credits" class="text-[11px] font-mono font-semibold text-emerald-400">--</span>
+
+        <div class="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+          <div id="credits-bar" class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full transition-all duration-500" style="width: 100%;"></div>
+        </div>
+
+        <div class="flex items-center justify-between text-[9px] text-zinc-500">
+          <span id="credits-detail">Used: -- / Limit: --</span>
+          <span id="credits-reset" class="text-zinc-400">Hourly reset</span>
+        </div>
+      </div>
+
+      <!-- Other Quotas (Video, Deep Research, Audio) -->
+      <div class="grid grid-cols-3 gap-1 text-[10px]">
+        <div class="bg-zinc-900/60 rounded-lg p-1.5 border border-zinc-800/60 text-center">
+          <div class="text-[9px] text-zinc-400">Video</div>
+          <div id="quota-video" class="font-mono font-semibold text-zinc-200 mt-0.5">10/10</div>
+        </div>
+        <div class="bg-zinc-900/60 rounded-lg p-1.5 border border-zinc-800/60 text-center">
+          <div class="text-[9px] text-zinc-400">Research</div>
+          <div id="quota-research" class="font-mono font-semibold text-zinc-200 mt-0.5">10/10</div>
+        </div>
+        <div class="bg-zinc-900/60 rounded-lg p-1.5 border border-zinc-800/60 text-center">
+          <div class="text-[9px] text-zinc-400">Audio</div>
+          <div id="quota-audio" class="font-mono font-semibold text-zinc-200 mt-0.5">10/10</div>
+        </div>
       </div>
     </div>
 
@@ -1905,11 +2007,40 @@ function renderDashboardHtml() {
         const data = await res.json();
         const p = data.profile;
         if (p) {
-          document.getElementById('user-name').innerText = p.name || 'AIPass User';
+          document.getElementById('user-name').innerText = p.name || 'WK 18K';
           document.getElementById('user-email').innerText = p.email || 'Active Session';
-          document.getElementById('user-plan').innerText = p.plan || 'Active';
-          document.getElementById('user-credits').innerText = typeof p.credits === 'number' ? \`\${p.credits} Pts\` : p.credits;
-          document.getElementById('user-avatar').innerText = (p.name || 'AI').slice(0, 2).toUpperCase();
+          document.getElementById('user-plan').innerText = p.plan || 'Free Plan';
+          document.getElementById('user-avatar').innerText = (p.name || 'WK').slice(0, 2).toUpperCase();
+
+          if (p.credits) {
+            const avail = typeof p.credits === 'object' ? p.credits.available : p.credits;
+            document.getElementById('user-credits').innerText = typeof avail === 'number' ? avail.toLocaleString() : avail;
+
+            if (typeof p.credits === 'object') {
+              const used = p.credits.used ?? '--';
+              const limit = p.credits.limit ?? '--';
+              document.getElementById('credits-detail').innerText = \`Used: \${used} / Limit: \${limit}\`;
+              const bar = document.getElementById('credits-bar');
+              if (bar) bar.style.width = \`\${p.credits.availablePercent ?? 100}%\`;
+
+              if (p.credits.periodEndsAt) {
+                try {
+                  const d = new Date(p.credits.periodEndsAt);
+                  document.getElementById('credits-reset').innerText = \`Reset \${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\`;
+                } catch {}
+              }
+            }
+          }
+
+          if (p.videoQuota) {
+            document.getElementById('quota-video').innerText = \`\${p.videoQuota.remaining}/\${p.videoQuota.limit}\`;
+          }
+          if (p.deepResearchQuota) {
+            document.getElementById('quota-research').innerText = \`\${p.deepResearchQuota.remaining}/\${p.deepResearchQuota.limit}\`;
+          }
+          if (p.audioQuota) {
+            document.getElementById('quota-audio').innerText = \`\${p.audioQuota.remaining}/\${p.audioQuota.limit}\`;
+          }
         }
       } catch {}
     }
