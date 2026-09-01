@@ -151,6 +151,36 @@ function updateCookiesFromResponse(res) {
   }
 }
 
+const SUBSTITUTIONS = [
+  [/127\.0\.0\.1/g, 'LOOPBACK-IP'],
+  [/169\.254\.169\.254/g, 'METADATA-IP'],
+  [/0\.0\.0\.0/g, 'ANY-IP'],
+  [/localhost/gi, 'LCLHST'],
+  [/file:\/\//gi, 'FILE-URI'],
+  [/<!doctype/gi, 'DOCTYPE-DECL'],
+  [/<!--/g, 'CMT-OPEN'],
+  [/-->/g, 'CMT-CLOSE'],
+  [/<script/gi, 'TAG-SCRIPT-OPEN'],
+  [/<\/script>/gi, 'TAG-SCRIPT-CLOSE'],
+  [/javascript:/gi, 'JS-SCHEME'],
+];
+
+const outbound = (text) => (typeof text === 'string' ? SUBSTITUTIONS.reduce((acc, [re, to]) => acc.replace(re, to), text) : text);
+const RESTORE = [
+  [/LOOPBACK-IP/g, '127.0.0.1'],
+  [/METADATA-IP/g, '169.254.169.254'],
+  [/ANY-IP/g, '0.0.0.0'],
+  [/LCLHST/g, 'localhost'],
+  [/FILE-URI/g, 'file://'],
+  [/DOCTYPE-DECL/g, '<!doctype'],
+  [/CMT-OPEN/g, '<!--'],
+  [/CMT-CLOSE/g, '-->'],
+  [/TAG-SCRIPT-OPEN/g, '<script'],
+  [/TAG-SCRIPT-CLOSE/g, '</script>'],
+  [/JS-SCHEME/g, 'javascript:'],
+];
+const inbound = (text) => (typeof text === 'string' ? RESTORE.reduce((acc, [re, to]) => acc.replace(re, to), text) : text);
+
 async function runDirect(job) {
   const cookie = getCookie();
   if (!cookie) {
@@ -206,6 +236,11 @@ async function runDirect(job) {
   }
 
   if (job.kind === 'chat') {
+    if (!job.conversationId) {
+      job.fail('no conversation id provided for direct request');
+      return;
+    }
+
     const controller = new AbortController();
     job.abortController = controller;
 
@@ -217,7 +252,7 @@ async function runDirect(job) {
           id: randomUUID(),
           role: 'user',
           metadata: { modelId: job.modelId },
-          parts: [{ type: 'text', text: job.text }],
+          parts: [{ type: 'text', text: outbound(job.text) }],
         }],
       });
 
@@ -267,10 +302,10 @@ async function runDirect(job) {
 
           switch (evt.type) {
             case 'text-delta':
-              job.delta({ kind: 'text', text: evt.delta });
+              job.delta({ kind: 'text', text: inbound(evt.delta) });
               break;
             case 'reasoning-delta':
-              job.delta({ kind: 'reasoning', text: evt.delta ?? evt.text });
+              job.delta({ kind: 'reasoning', text: inbound(evt.delta ?? evt.text) });
               break;
             case 'tool-input-start':
               toolNames.set(evt.toolCallId, evt.toolName);

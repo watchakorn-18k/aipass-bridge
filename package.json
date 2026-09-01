@@ -7,6 +7,7 @@
     "test": "node --test aipass-bridge/test/*.test.mjs",
     "chat": "node aipass-bridge/chat.mjs",
     "agent": "node aipass-bridge/agent.mjs",
+    "team": "node aipass-bridge/team.mjs",
     "models": "node aipass-bridge/list.mjs models",
     "conversations": "node aipass-bridge/list.mjs conversations",
     "web": "next dev",
