@@ -1160,6 +1160,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, directMode: Boolean(getCookie()) });
     }
 
+    if ((path === '/' || path === '/dashboard' || path === '/chat') && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(renderDashboardHtml());
+      return;
+    }
+
     if (path === '/status' || path === '/health') {
       return json(res, 200, {
         ok: true,
@@ -1180,6 +1186,461 @@ const server = http.createServer(async (req, res) => {
     else res.end();
   }
 });
+
+function renderDashboardHtml() {
+  return `<!DOCTYPE html>
+<html lang="en" class="dark h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIPass Bridge — Web Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: { 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    pre code.hljs { background: #09090b; border-radius: 0.75rem; padding: 1rem; border: 1px solid #27272a; }
+    .prose code { background: #27272a; padding: 0.15rem 0.35rem; border-radius: 0.35rem; font-size: 0.85em; }
+    .prose p { margin-bottom: 0.5rem; }
+    .prose p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body class="h-full bg-zinc-950 text-zinc-100 font-sans antialiased overflow-hidden flex">
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar" class="w-72 border-r border-zinc-800 bg-zinc-900/95 flex flex-col transition-all duration-200 z-30 shrink-0">
+    <div class="p-4 border-b border-zinc-800 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <div class="h-8 w-8 rounded-xl bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
+            <i data-lucide="sparkles" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h1 class="text-sm font-semibold tracking-tight text-white flex items-center gap-1.5">
+              AIPass Bridge
+              <span class="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-400 border border-blue-500/20 font-mono">Live</span>
+            </h1>
+            <p class="text-[11px] text-zinc-400">Web AI Dashboard</p>
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-new-chat" class="flex items-center justify-center gap-2 w-full rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium py-2.5 px-4 shadow-md shadow-blue-600/20 transition-all active:scale-[0.99]">
+        <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+        <span>New Chat</span>
+      </button>
+    </div>
+
+    <!-- Search -->
+    <div class="px-3 py-2">
+      <div class="relative">
+        <i data-lucide="search" class="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5"></i>
+        <input id="search-conv" type="text" placeholder="Search chats..." class="w-full bg-zinc-800/60 border border-zinc-700/50 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500">
+      </div>
+    </div>
+
+    <!-- Conversation List -->
+    <div id="conv-list" class="flex-1 overflow-y-auto px-2 py-1 space-y-1">
+      <div class="text-[11px] font-medium text-zinc-500 uppercase tracking-wider px-2 py-1">Conversations</div>
+      <div id="conv-items" class="space-y-0.5 text-xs text-zinc-400">Loading conversations...</div>
+    </div>
+
+    <!-- Status Footer -->
+    <div class="p-3 border-t border-zinc-800 bg-zinc-950/50">
+      <div class="flex items-center justify-between mb-1.5">
+        <div class="flex items-center gap-2">
+          <span id="status-dot" class="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span id="status-text" class="text-xs font-medium text-zinc-300">Connected</span>
+        </div>
+        <button id="btn-settings" class="p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-lg transition-colors" title="Settings">
+          <i data-lucide="settings-2" class="w-3.5 h-3.5"></i>
+        </button>
+      </div>
+      <div class="flex items-center justify-between text-[11px] text-zinc-500">
+        <span id="server-host" class="truncate max-w-[150px]">http://157.85.96.7:8787</span>
+        <span id="server-ping" class="text-emerald-400 font-mono text-[10px]">--ms</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CHAT AREA -->
+  <main class="flex-1 flex flex-col bg-zinc-950 overflow-hidden">
+    <!-- Header -->
+    <header class="h-14 border-b border-zinc-800 bg-zinc-900/60 backdrop-blur px-4 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-3">
+        <!-- Model Selector Dropdown -->
+        <div class="relative flex items-center">
+          <select id="model-select" class="bg-zinc-800 text-zinc-100 text-xs font-medium pl-3 pr-8 py-1.5 rounded-xl border border-zinc-700 focus:outline-none focus:border-blue-500 cursor-pointer">
+            <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite [Free]</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-zinc-400 absolute right-2.5 pointer-events-none"></i>
+        </div>
+
+        <div id="model-badge" class="hidden sm:flex items-center gap-1.5">
+          <span class="rounded bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400 border border-emerald-500/20">Free Credit</span>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <button id="btn-refresh" class="flex items-center gap-1.5 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 border border-zinc-700 transition-colors">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+          <span class="hidden sm:inline">Refresh</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Messages List -->
+    <div id="messages-container" class="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6">
+      <div id="empty-state" class="flex flex-col items-center justify-center h-full text-center max-w-lg mx-auto">
+        <div class="h-14 w-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-500 flex items-center justify-center text-white shadow-xl shadow-blue-500/20 mb-4">
+          <i data-lucide="sparkles" class="w-7 h-7"></i>
+        </div>
+        <h2 class="text-lg font-bold text-white mb-2">AIPass Bridge Chat</h2>
+        <p class="text-xs text-zinc-400 mb-6 leading-relaxed">
+          OpenAI-Compatible & Anthropic-Compatible AI Server with real-time SSE streaming, tool reasoning, and auto-refresh session keep-alive.
+        </p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full">
+          <button class="prompt-chip flex items-center gap-2.5 p-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-blue-500/50 hover:bg-zinc-800/60 text-left text-xs text-zinc-300 transition-all" data-prompt="สรุปข่าว AI และเทคโนโลยีวันนี้">
+            <i data-lucide="globe" class="w-4 h-4 text-blue-400 shrink-0"></i>
+            <span class="truncate">สรุปข่าว AI วันนี้</span>
+          </button>
+          <button class="prompt-chip flex items-center gap-2.5 p-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-blue-500/50 hover:bg-zinc-800/60 text-left text-xs text-zinc-300 transition-all" data-prompt="เขียนโค้ด React Hook สำหรับจัดการ WebSocket">
+            <i data-lucide="terminal" class="w-4 h-4 text-blue-400 shrink-0"></i>
+            <span class="truncate">เขียนโค้ด React Hook</span>
+          </button>
+          <button class="prompt-chip flex items-center gap-2.5 p-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-blue-500/50 hover:bg-zinc-800/60 text-left text-xs text-zinc-300 transition-all" data-prompt="อธิบายหลักการทำงานของ LLM Reasoning สั้นๆ">
+            <i data-lucide="brain" class="w-4 h-4 text-purple-400 shrink-0"></i>
+            <span class="truncate">อธิบาย LLM Reasoning</span>
+          </button>
+          <button class="prompt-chip flex items-center gap-2.5 p-3 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-blue-500/50 hover:bg-zinc-800/60 text-left text-xs text-zinc-300 transition-all" data-prompt="ช่วยแนะนำสถาปัตยกรรม Microservices">
+            <i data-lucide="cpu" class="w-4 h-4 text-emerald-400 shrink-0"></i>
+            <span class="truncate">แนะนำ Microservices</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input Box -->
+    <div class="border-t border-zinc-800 p-4 bg-zinc-900/40 shrink-0">
+      <div class="max-w-3xl mx-auto">
+        <div class="relative flex items-end rounded-2xl bg-zinc-900 border border-zinc-700/60 shadow-lg focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition-all">
+          <textarea id="chat-input" rows="1" placeholder="Message AI... (Shift+Enter for newline)" class="w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none max-h-40"></textarea>
+          <div class="p-2 shrink-0 flex items-center gap-1.5">
+            <button id="btn-send" class="h-8 w-8 rounded-xl bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+              <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            </button>
+            <button id="btn-stop" class="hidden h-8 w-8 rounded-xl bg-red-600/20 text-red-400 hover:bg-red-600/30 border border-red-500/30 flex items-center justify-center transition-all">
+              <i data-lucide="square" class="w-3 h-3 fill-current"></i>
+            </button>
+          </div>
+        </div>
+        <div class="flex items-center justify-between mt-1.5 px-1 text-[11px] text-zinc-500">
+          <span>Bridge: <span class="text-zinc-400 font-mono" id="footer-host">http://157.85.96.7:8787</span></span>
+          <span>API: <span class="text-blue-400 font-mono">/v1/chat/completions & /v1/messages</span></span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div id="modal-settings" class="hidden fixed inset-0 bg-black/70 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+    <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-5 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-zinc-800 pb-3">
+        <h3 class="text-sm font-semibold text-white flex items-center gap-2">
+          <i data-lucide="settings-2" class="w-4 h-4 text-blue-400"></i>
+          Bridge Server Settings
+        </h3>
+        <button id="btn-close-settings" class="text-zinc-400 hover:text-zinc-200">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="block text-zinc-300 font-medium mb-1">Update Session Cookie</label>
+          <textarea id="cookie-input" rows="3" placeholder="Paste __Secure-ai_passport_auth cookie..." class="w-full bg-zinc-950 border border-zinc-700/60 rounded-xl p-2.5 text-xs font-mono text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-500"></textarea>
+          <p class="text-[11px] text-zinc-500 mt-1">Updates the live session token immediately without restarting.</p>
+        </div>
+
+        <div id="cookie-alert" class="hidden p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs">
+          Cookie updated successfully!
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+        <button id="btn-cancel-settings" class="px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800 rounded-lg">Cancel</button>
+        <button id="btn-save-cookie" class="px-3.5 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-lg shadow">Apply Cookie</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    lucide.createIcons();
+
+    const BASE_URL = window.location.origin;
+    document.getElementById('server-host').innerText = BASE_URL;
+    document.getElementById('footer-host').innerText = BASE_URL;
+
+    let activeAbortController = null;
+    let allConversations = [];
+
+    // Fetch models & status
+    async function loadStatus() {
+      const start = performance.now();
+      try {
+        const res = await fetch(\`\${BASE_URL}/status\`);
+        const ping = Math.round(performance.now() - start);
+        document.getElementById('server-ping').innerText = \`\${ping}ms\`;
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('status-dot').className = 'h-2 w-2 rounded-full bg-emerald-500';
+          document.getElementById('status-text').innerText = data.directMode ? 'Direct Headless' : 'Extension Linked';
+        }
+      } catch {
+        document.getElementById('status-dot').className = 'h-2 w-2 rounded-full bg-red-500';
+        document.getElementById('status-text').innerText = 'Disconnected';
+      }
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch(\`\${BASE_URL}/v1/models\`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const select = document.getElementById('model-select');
+        select.innerHTML = '';
+        (data.data || []).forEach((m) => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.innerText = \`\${m.name || m.id} \${m.free_credit ? '[Free]' : ''}\`;
+          select.appendChild(opt);
+        });
+      } catch {}
+    }
+
+    async function loadConversations() {
+      try {
+        const res = await fetch(\`\${BASE_URL}/conversations\`);
+        if (!res.ok) return;
+        const data = await res.json();
+        allConversations = data.conversations || [];
+        renderConversations(allConversations);
+      } catch {}
+    }
+
+    function renderConversations(list) {
+      const container = document.getElementById('conv-items');
+      if (!list.length) {
+        container.innerHTML = '<div class="px-2 py-3 text-zinc-500 text-center">No conversations</div>';
+        return;
+      }
+      container.innerHTML = list.map(c => \`
+        <button class="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-zinc-800/80 hover:text-zinc-200 flex items-center gap-2 truncate transition-colors" onclick="selectConversation('\${c.id}')">
+          <i data-lucide="message-square" class="w-3.5 h-3.5 text-zinc-500 shrink-0"></i>
+          <span class="truncate">\${c.title || c.id}</span>
+        </button>
+      \`).join('');
+      lucide.createIcons();
+    }
+
+    window.selectConversation = async (id) => {
+      await fetch(\`\${BASE_URL}/config\`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation: id })
+      });
+      document.getElementById('messages-container').innerHTML = '';
+      loadConversations();
+    };
+
+    document.getElementById('btn-new-chat').onclick = async () => {
+      const model = document.getElementById('model-select').value;
+      const res = await fetch(\`\${BASE_URL}/conversations/new\`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, message: 'New conversation' })
+      });
+      document.getElementById('messages-container').innerHTML = '';
+      loadConversations();
+    };
+
+    document.getElementById('search-conv').oninput = (e) => {
+      const q = e.target.value.toLowerCase();
+      renderConversations(allConversations.filter(c => (c.title || c.id).toLowerCase().includes(q)));
+    };
+
+    // Chat sending
+    async function sendMessage(text) {
+      if (!text.trim() || activeAbortController) return;
+
+      const empty = document.getElementById('empty-state');
+      if (empty) empty.remove();
+
+      const container = document.getElementById('messages-container');
+      const userBubble = document.createElement('div');
+      userBubble.className = 'flex flex-col items-end gap-1 max-w-3xl mx-auto';
+      userBubble.innerHTML = \`
+        <div class="text-[11px] text-zinc-500">You</div>
+        <div class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl px-4 py-2.5 text-sm max-w-[85%] shadow-sm leading-relaxed">\${escapeHtml(text)}</div>
+      \`;
+      container.appendChild(userBubble);
+
+      const aiBubble = document.createElement('div');
+      aiBubble.className = 'flex flex-col items-start gap-1 max-w-3xl mx-auto w-full';
+      const aiId = 'msg-' + Date.now();
+      aiBubble.innerHTML = \`
+        <div class="text-[11px] text-zinc-500">\${document.getElementById('model-select').value}</div>
+        <div id="\${aiId}" class="bg-zinc-900 border border-zinc-800 text-zinc-100 rounded-2xl p-4 text-sm w-full shadow-sm leading-relaxed prose prose-invert max-w-none">
+          <span class="inline-flex items-center gap-1.5 text-zinc-400 animate-pulse">
+            <span class="h-2 w-2 rounded-full bg-blue-400"></span> Generating response...
+          </span>
+        </div>
+      \`;
+      container.appendChild(aiBubble);
+      container.scrollTop = container.scrollHeight;
+
+      document.getElementById('chat-input').value = '';
+      document.getElementById('btn-send').classList.add('hidden');
+      document.getElementById('btn-stop').classList.remove('hidden');
+
+      const controller = new AbortController();
+      activeAbortController = controller;
+
+      const model = document.getElementById('model-select').value;
+      let fullContent = '';
+      let reasoningContent = '';
+
+      try {
+        const response = await fetch(\`\${BASE_URL}/v1/chat/completions\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [{ role: 'user', content: text }]
+          }),
+          signal: controller.signal
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let cut;
+          while ((cut = buffer.indexOf('\\n\\n')) !== -1) {
+            const frame = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            const lines = frame.split('\\n').filter(l => l.startsWith('data:'));
+            const dataStr = lines.map(l => l.slice(5).trim()).join('');
+            if (!dataStr || dataStr === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              const delta = parsed.choices?.[0]?.delta;
+              if (delta) {
+                if (delta.reasoning_content) reasoningContent += delta.reasoning_content;
+                if (delta.content) fullContent += delta.content;
+
+                let html = '';
+                if (reasoningContent) {
+                  html += \`<details class="mb-3 bg-zinc-950/70 p-2.5 rounded-xl border border-zinc-800 text-xs text-zinc-400 font-mono"><summary class="cursor-pointer font-medium text-purple-400">Thinking Process</summary><div class="mt-2 whitespace-pre-wrap">\${escapeHtml(reasoningContent)}</div></details>\`;
+                }
+                html += marked.parse(fullContent || '...');
+                document.getElementById(aiId).innerHTML = html;
+                document.querySelectorAll('pre code').forEach((el) => hljs.highlightElement(el));
+                container.scrollTop = container.scrollHeight;
+              }
+            } catch {}
+          }
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          document.getElementById(aiId).innerHTML = \`<span class="text-red-400">❌ Error: \${err.message}</span>\`;
+        }
+      } finally {
+        activeAbortController = null;
+        document.getElementById('btn-send').classList.remove('hidden');
+        document.getElementById('btn-stop').classList.add('hidden');
+        loadConversations();
+      }
+    }
+
+    document.getElementById('btn-send').onclick = () => sendMessage(document.getElementById('chat-input').value);
+    document.getElementById('btn-stop').onclick = () => { if (activeAbortController) activeAbortController.abort(); };
+    document.getElementById('chat-input').onkeydown = (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage(e.target.value);
+      }
+    };
+
+    document.querySelectorAll('.prompt-chip').forEach(btn => {
+      btn.onclick = () => sendMessage(btn.getAttribute('data-prompt'));
+    });
+
+    // Settings
+    document.getElementById('btn-settings').onclick = () => document.getElementById('modal-settings').classList.remove('hidden');
+    document.getElementById('btn-close-settings').onclick = () => document.getElementById('modal-settings').classList.add('hidden');
+    document.getElementById('btn-cancel-settings').onclick = () => document.getElementById('modal-settings').classList.add('hidden');
+
+    document.getElementById('btn-save-cookie').onclick = async () => {
+      const cookie = document.getElementById('cookie-input').value.trim();
+      if (!cookie) return;
+      const res = await fetch(\`\${BASE_URL}/cookie\`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cookie })
+      });
+      if (res.ok) {
+        document.getElementById('cookie-alert').classList.remove('hidden');
+        setTimeout(() => {
+          document.getElementById('cookie-alert').classList.add('hidden');
+          document.getElementById('modal-settings').classList.add('hidden');
+        }, 1500);
+        loadStatus();
+        loadModels();
+      }
+    };
+
+    document.getElementById('btn-refresh').onclick = () => {
+      loadStatus();
+      loadModels();
+      loadConversations();
+    };
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Init
+    loadStatus();
+    loadModels();
+    loadConversations();
+    setInterval(loadStatus, 5000);
+  </script>
+</body>
+</html>`;
+}
+
 
 server.listen(PORT, HOST, () => {
   log(`aipass bridge on http://${HOST}:${PORT}`);
