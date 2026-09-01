@@ -229,12 +229,26 @@ export function tempDir(files = {}) {
   return dir;
 }
 
-export function run(script, args, { cwd } = {}) {
+// `stdin` may be a string (sent at once) or an array of [delayMs, line] pairs,
+// which models a user typing after the process is already running — necessary
+// for watch-mode tests, where a line sent before the prompt appears is lost.
+export function run(script, args, { cwd, stdin } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [script, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [script, ...args], {
+      cwd, stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    });
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.stderr.on('data', (d) => { out += d; });
+    if (typeof stdin === 'string') { child.stdin.write(stdin); child.stdin.end(); }
+    else if (Array.isArray(stdin)) {
+      let total = 0;
+      for (const [delay, line] of stdin) {
+        total += delay;
+        setTimeout(() => { try { child.stdin.write(line); } catch {} }, total);
+      }
+      setTimeout(() => { try { child.stdin.end(); } catch {} }, total + 200);
+    }
     child.on('close', (code) => resolve({ code, out: out.replace(/\x1b\[[0-9;]*m/g, '') }));
   });
 }

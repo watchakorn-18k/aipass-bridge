@@ -42,6 +42,7 @@ Ctrl+C quits.
 | `npm run dev` | start the bridge on :8787 |
 | `npm run chat` | terminal client |
 | `npm run agent -- "task" --root .` | local file tools, in a fresh conversation |
+| `npm run agent -- "task" --root . --watch` | stay open for follow-up tasks on the same conversation |
 | `npm run models` | list models, marking free-credit ones |
 | `npm run conversations` | list conversations and which is in use |
 | `npm test` | run the test suite |
@@ -92,6 +93,19 @@ its own pending work, you get a unified diff at the end, and nothing touches
 disk until `--apply`. Paths are confined to `--root`; shell access needs
 `--allow-run`.
 
+**Watch mode** (`--watch`) keeps the agent open and takes follow-up tasks on the
+same conversation, so the model keeps everything it has already read in context
+— and because the server holds that history, each new task is still just one
+small message. Run it in your editor's integrated terminal for a live edit loop.
+
+**Binding to a custom assistant.** Create one at `/ai-assistant/new`, paste the
+NEED/EDIT/CREATE/DONE instructions into its behaviour field, then either point at
+a conversation started under it (`--conversation <id> --slim`) or let the bridge
+create bound conversations with `--assistant <id>` (which implies `--slim`). The
+form field that carries the assistant id is set by `AIPASS_ASSISTANT_FIELD` on
+the bridge (default `aiAssistantId`) — confirm it from a capture of the UI's
+"new chat" request once, and every run binds automatically.
+
 This works within the constraints above rather than against them:
 
 - **Instructions are sent once**, as the first message of the conversation. The
@@ -119,13 +133,21 @@ This works within the constraints above rather than against them:
   remembers each part, so the model still sees the whole thing. If a fragment is
   rejected even on its own, the agent prints it rather than failing silently.
 
-- **Loopback addresses are substituted.** `localhost`, `127.0.0.1`, `0.0.0.0`,
+- **A custom aipass assistant carries the protocol.** The sanctioned way to
+  give the model the tool convention is aipass's own Create AI Assistant
+  (`/ai-assistant/new`) — paste the NEED/EDIT/CREATE/DONE instructions into its
+  behaviour field. Then run against a conversation bound to that assistant with
+  `--conversation <id>` (or `--reuse`) plus `--slim`, which drops the built-in
+  preamble the assistant already provides.
+- **Loopback addresses and HTML comments are substituted.** `localhost`, `127.0.0.1`, `0.0.0.0`,
   `169.254.169.254` and `file://` are what SSRF filter rules match on, and
   ordinary project files are full of them — a README saying *"open
   http://localhost:3000"* is enough on its own to get a request rejected
-  (confirmed: the same message passed once that line was split away). They go
-  out as `LCLHST`, `LOOPBACK-IP` and so on, and are restored before anything is
-  written, so the bytes on disk are exactly what the file had.
+  (confirmed: the same message passed once that line was split away). `localhost`,
+  `127.0.0.1`, `file://`, and the HTML-comment / `<script` shapes an XSS rule
+  flags (a markdown file opening with `<!--` is enough) go out as `LCLHST`,
+  `CMT-OPEN` and so on, restored before anything is written — so the bytes on
+  disk are exactly what the file had.
 
 - **Lines that cannot be sent at all are dropped.** Real source contains
   code-execution shapes — `node -e`, `curl`, `rm -rf`, `/bin/sh`, `../../` —
@@ -185,7 +207,7 @@ chat. Only the last user message is forwarded.
 npm test
 ```
 
-32 tests, no dependencies, about 1.5 seconds. `test/harness.mjs` runs the real
+37 tests, no dependencies, about 2 seconds. `test/harness.mjs` runs the real
 bridge as a subprocess and a scriptable stand-in for the extension, so tests
 drive the actual HTTP surface and the real CLIs rather than mocks of them.
 

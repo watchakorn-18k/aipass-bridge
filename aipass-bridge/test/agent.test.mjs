@@ -8,7 +8,7 @@ let bridge;
 before(async () => { bridge = await startBridge(); });
 after(() => bridge.stop());
 
-const agent = (dir, args = []) => run(AGENT, ['task text', '--root', dir, '--bridge', bridge.base, ...args]);
+const agent = (dir, args = [], opts = {}) => run(AGENT, ['task text', '--root', dir, '--bridge', bridge.base, ...args], opts);
 
 test('reads files and reports a summary, touching nothing on disk', async (t) => {
   const dir = tempDir({ 'README.md': 'a starter project\n' });
@@ -240,4 +240,86 @@ test('--conversation pins an explicit one', async (t) => {
   assert.equal(ext.created.length, 0);
   assert.equal(ext.chats.at(-1).conversationId, '1234abcd1234abcd');
   assert.match(out, /continuing/);
+});
+
+test('html comments survive a comment-blocking edge and restore on disk', async (t) => {
+  const original = '<!-- BEGIN:nextjs-agent-rules -->\n# Rules\nsome prose here\n<!-- END:nextjs-agent-rules -->\n';
+  const dir = tempDir({ 'AGENTS.md': original });
+  const handler = scripted([
+    'NEED file AGENTS.md',
+    'EDIT AGENTS.md\nFIND\n# Rules\nNEW\n# Project Rules\nEND',
+    'DONE read and tweaked it',
+  ], {
+    reject: (t) => t.includes('<!--'),   // the edge refuses any HTML comment, as observed
+  });
+  const ext = await new FakeExtension(bridge.base, { onChat: handler }).connect();
+  t.after(() => ext.disconnect());
+
+  const { out } = await agent(dir, ['--apply']);
+  assert.match(out, /✓ read AGENTS\.md/);
+  assert.match(out, /✓ read and tweaked it/);
+
+  const sent = handler.sent.join('\n');
+  assert.doesNotMatch(sent, /<!--/, 'no HTML comment may reach the edge');
+  assert.match(sent, /CMT-OPEN/, 'it is neutralised, not dropped');
+
+  // bytes on disk = the original with only the intended edit applied
+  assert.equal(
+    fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'),
+    original.replace('# Rules', '# Project Rules'),
+  );
+});
+
+test('--slim drops the built-in preamble and sends only the task', async (t) => {
+  const dir = tempDir({ 'a.txt': 'x' });
+  const handler = scripted(['DONE nothing needed']);
+  const ext = await new FakeExtension(bridge.base, { onChat: handler }).connect();
+  t.after(() => ext.disconnect());
+
+  await agent(dir, ['--slim', '--reuse']);
+  const first = handler.sent[0];
+  assert.doesNotMatch(first, /NEED file README\.md/, 'the instruction block must be gone');
+  assert.doesNotMatch(first, /you write the lines/i);
+  assert.match(first, /Task:/);
+  assert.match(first, /a\.txt/, 'the listing is still there');
+  assert.ok(Buffer.byteLength(first) < 200, `slim first message should be small, was ${Buffer.byteLength(first)}`);
+});
+
+test('--watch runs a follow-up task on the same conversation', async (t) => {
+  const dir = tempDir({ 'a.txt': 'one' });
+  // Each task: one read then DONE. Same handler serves both tasks in sequence.
+  let turn = 0;
+  const replies = ['NEED file a.txt', 'DONE first task', 'NEED file a.txt', 'DONE second task'];
+  const convIds = [];
+  const ext = await new FakeExtension(bridge.base, {
+    onChat: async (job, e) => {
+      if (job.text === 'Hello.' || job.text === 'Starting a new working session.') { await e.text('hi'); return void e.done(); }
+      convIds.push(job.conversationId);
+      await e.text(replies[Math.min(turn++, replies.length - 1)]);
+      await e.done();
+    },
+  }).connect();
+  t.after(() => ext.disconnect());
+
+  const { out } = await agent(dir, ['--reuse', '--watch'], { stdin: [[400, 'look again\n']] });
+  assert.match(out, /✓ first task/);
+  assert.match(out, /watching/);
+  assert.match(out, /✓ second task/, 'the follow-up task must run');
+  // every chat turn hit the same conversation
+  assert.equal(new Set(convIds).size, 1, 'watch must stay in one conversation');
+});
+
+test('--assistant binds the created conversation and implies slim', async (t) => {
+  const dir = tempDir({ 'a.txt': 'x' });
+  const ext = await new FakeExtension(bridge.base, { onChat: scripted(['DONE nothing to do']) }).connect();
+  t.after(() => ext.disconnect());
+
+  const { out } = await agent(dir, ['--assistant', 'asst_abc123']);
+  assert.equal(ext.created.length, 1);
+  assert.equal(ext.created[0].assistant, 'asst_abc123', 'the create job carries the assistant id');
+  assert.equal(ext.created[0].assistantField, 'aiAssistantId', 'and the configured field name');
+  // implies slim: the heavy preamble must be gone
+  const firstTask = ext.chats.find((c) => c.text.includes('Task:'));
+  assert.ok(firstTask, 'a task message was sent');
+  assert.doesNotMatch(firstTask.text, /you write the lines/i);
 });

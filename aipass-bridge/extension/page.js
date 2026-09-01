@@ -40,6 +40,9 @@
         intent: 'create-conversation',
         clientCreateRequestId: job.requestId,
       });
+      // Bind to a custom assistant when one is configured. The field name comes
+      // from the bridge so it can be corrected without touching the extension.
+      if (job.assistant && job.assistantField) params.set(job.assistantField, job.assistant);
       const res = await fetch('/chat.data', {
         method: 'POST',
         credentials: 'include',

@@ -35,6 +35,17 @@ const CONVERSATION = flag('conversation', null);
 // A conversation carries its own history, so reusing one drags in whatever was
 // said before — including any refusal. Each run gets a fresh one by default.
 const REUSE = has('reuse');
+// When the conversation is bound to a custom aipass assistant that already
+// carries the NEED/EDIT/CREATE/DONE instructions, the preamble is redundant —
+// and sending it again is just extra payload for the edge to inspect.
+const SLIM = has('slim');
+// Stay open after the first task and take follow-ups on the same conversation,
+// so the model keeps everything it has already read in context.
+const WATCH = has('watch');
+// Bind new conversations to a custom aipass assistant. The field name the
+// create form uses is set by AIPASS_ASSISTANT_FIELD on the bridge; here we just
+// pass the id through. Implies --slim, since the assistant carries the protocol.
+const ASSISTANT = flag('assistant', process.env.AIPASS_ASSISTANT_ID || null);
 
 if (!task) {
   console.error(`usage: npm run agent -- "<task>" [options]
@@ -83,6 +94,14 @@ const SUBSTITUTIONS = [
   [/0\.0\.0\.0/g, 'ANY-IP'],
   [/localhost/gi, 'LCLHST'],
   [/file:\/\//gi, 'FILE-URI'],
+  // HTML/XSS-shaped tokens that ordinary files carry — a markdown or Vue file
+  // opening with an HTML comment is enough to trip an XSS rule.
+  [/<!doctype/gi, 'DOCTYPE-DECL'],
+  [/<!--/g, 'CMT-OPEN'],
+  [/-->/g, 'CMT-CLOSE'],
+  [/<script/gi, 'TAG-SCRIPT-OPEN'],
+  [/<\/script>/gi, 'TAG-SCRIPT-CLOSE'],
+  [/javascript:/gi, 'JS-SCHEME'],
 ];
 
 const outbound = (text) => SUBSTITUTIONS.reduce((acc, [re, to]) => acc.replace(re, to), text);
@@ -95,6 +114,12 @@ const RESTORE = [
   [/ANY-IP/g, '0.0.0.0'],
   [/LCLHST/g, 'localhost'],
   [/FILE-URI/g, 'file://'],
+  [/DOCTYPE-DECL/g, '<!doctype'],
+  [/CMT-OPEN/g, '<!--'],
+  [/CMT-CLOSE/g, '-->'],
+  [/TAG-SCRIPT-OPEN/g, '<script'],
+  [/TAG-SCRIPT-CLOSE/g, '</script>'],
+  [/JS-SCHEME/g, 'javascript:'],
 ];
 
 const inbound = (text) => (text == null ? text : RESTORE.reduce((acc, [re, to]) => acc.replace(re, to), text));
@@ -291,7 +316,7 @@ const MIN_SPLIT = 300;
 // contain code-execution shapes — `node -e`, `curl`, `rm -rf`, `/bin/sh` — that
 // no amount of splitting gets past. Drop only the offending lines so the run
 // survives and the model still sees the rest of the file.
-const RISKY_LINE = /(node\s+-{1,2}e\b|--eval\b|\beval\(|child_process|exec(Sync)?\(|spawnSync?\(|\bcurl\b|\bwget\b|\b(ba)?sh\s+-c\b|rm\s+-rf|\/etc\/|\/bin\/(ba)?sh|\.\.\/\.\.\/)/i;
+const RISKY_LINE = /(node\s+-{1,2}e\b|--eval\b|\beval\(|child_process|exec(Sync)?\(|spawnSync?\(|\bcurl\b|\bwget\b|\b(ba)?sh\s+-c\b|rm\s+-rf|\/etc\/|\/bin\/(ba)?sh|\.\.\/\.\.\/|<!doctype|<!--|-->|<script|<\/script|javascript:|onerror\s*=|onload\s*=)/i;
 
 function redact(text) {
   let dropped = 0;
@@ -364,69 +389,97 @@ if (CONVERSATION) {
 } else if (!REUSE) {
   const made = await fetch(`${BRIDGE}/conversations/new`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...(MODEL ? { model: MODEL } : {}), message: 'Starting a new working session.' }),
+    body: JSON.stringify({ ...(MODEL ? { model: MODEL } : {}), ...(ASSISTANT ? { assistant: ASSISTANT } : {}), message: 'Starting a new working session.' }),
   }).then((r) => r.json()).catch((err) => ({ error: { message: String(err.message) } }));
   if (made?.error) console.error(red(`could not start a new conversation: ${made.error.message}`));
 }
 const bridgeStatus = await fetch(`${BRIDGE}/status`).then((r) => r.json()).catch(() => null);
 
-console.log(bold('task  ') + task);
 console.log(bold('root  ') + ROOT);
 console.log(bold('mode  ') + (APPLY ? green('APPLY — files will be written') : 'dry run (pass --apply to write)'));
 console.log(bold('chat  ') + (bridgeStatus?.conversation ?? 'resolves on first message') +
-  dim(CONVERSATION ? '  (continuing)' : REUSE ? '  (reusing the most recent)' : '  (new)')); 
+  dim(CONVERSATION ? '  (continuing)' : REUSE ? '  (reusing the most recent)' : '  (new)') +
+  (ASSISTANT ? dim(`  · assistant ${ASSISTANT}`) : ''));
 
-// Turn one carries the instructions; the server remembers them for the rest of
-// the conversation, so nothing after this resends them.
-let listing = '';
-try { listing = `\n\nTo save you a step, here is what is at the top level already:\n${outbound(TOOLS.list('.'))}`; } catch { /* ignore */ }
-let next = `${PREAMBLE}${listing}\n\nHere is what I want to know: ${task}\n\nWhat should I open first?`;
-let nudges = 0;
+const useSlim = SLIM || Boolean(ASSISTANT);
 
-for (let step = 1; step <= MAX_STEPS; step++) {
-  console.log(bold(`\n─── step ${step}/${MAX_STEPS} ${'─'.repeat(40)}`));
-  let reply;
-  try { reply = await sayResilient(next); }
-  catch (err) { console.error(red(`\n${err.message}`)); break; }
+// One task: drive the loop to a DONE (or a limit), then report and write.
+// The conversation persists across calls, so the model keeps its context.
+async function runTask(taskText, { first }) {
+  overlay.clear();
+  let listing = '';
+  try { listing = outbound(TOOLS.list('.')); } catch { /* ignore */ }
 
-  const calls = parse(reply);
-  const done = calls.find((c) => c.kind === 'done');
-  const work = calls.filter((c) => c.kind !== 'done');
+  let next = useSlim
+    ? `${first ? `Top level of the project: ${listing}\n\n` : ''}Task: ${taskText}\n\nWhat should I open first?`
+    : first
+      ? `${PREAMBLE}\n\nTo save you a step, here is what is at the top level already:\n${listing}\n\nHere is what I want to know: ${taskText}\n\nWhat should I open first?`
+      : `New task: ${taskText}\n\nWhat should I open first?`;
 
-  if (!work.length) {
-    if (done) { console.log(green(`\n✓ ${done.arg || prose(reply) || 'done'}`)); break; }
-    if (++nudges > 2) { console.log(red('\nno marker after three replies — stopping. Try a fresh conversation, or another model.')); break; }
-    console.log(red(`\nno marker in that reply — nudging (${nudges}/2)`));
-    next = `I could not tell what to open from that. I have the project open here and I am pasting you whatever you name — nothing happens on your side. ${REMINDER}`;
-    continue;
+  let nudges = 0;
+  for (let step = 1; step <= MAX_STEPS; step++) {
+    console.log(bold(`\n─── step ${step}/${MAX_STEPS} ${'─'.repeat(40)}`));
+    let reply;
+    try { reply = await sayResilient(next); }
+    catch (err) { console.error(red(`\n${err.message}`)); break; }
+
+    const calls = parse(reply);
+    const done = calls.find((c) => c.kind === 'done');
+    const work = calls.filter((c) => c.kind !== 'done');
+
+    if (!work.length) {
+      if (done) { console.log(green(`\n✓ ${done.arg || prose(reply) || 'done'}`)); break; }
+      if (++nudges > 2) { console.log(red('\nno marker after three replies — stopping.')); break; }
+      console.log(red(`\nno marker in that reply — nudging (${nudges}/2)`));
+      next = `I could not tell what to open from that. I have the project open here and I am pasting you whatever you name — nothing happens on your side. ${REMINDER}`;
+      continue;
+    }
+    nudges = 0;
+
+    const results = [];
+    for (const call of work) {
+      let result;
+      try { result = TOOLS[call.kind](call.arg, call.body); }
+      catch (err) { result = `error: ${err.message}`; }
+      const head = result.split('\n')[0];
+      console.log(`  ${/^(no such|error|the text)/.test(result) ? red('✗') : green('✓')} ${call.kind} ${call.arg} ${dim(head.slice(0, 70))}`);
+      results.push(`Result of ${call.kind} ${call.arg}:\n${outbound(result)}`);
+    }
+
+    const stillLooking = work.some((c) => c.kind === 'list' || c.kind === 'read');
+    if (done && !stillLooking) { console.log(green(`\n✓ ${done.arg || prose(reply) || 'done'}`)); break; }
+    if (done) console.log(dim('  (ignoring DONE — it came before the results it asked for)'));
+    next = `${results.join('\n\n')}\n\n${REMINDER}`;
+    if (step === MAX_STEPS) console.log(red('\nreached the step limit'));
   }
-  nudges = 0;
 
-  const results = [];
-  for (const call of work) {
-    let result;
-    try { result = TOOLS[call.kind](call.arg, call.body); }
-    catch (err) { result = `error: ${err.message}`; }
-    const head = result.split('\n')[0];
-    console.log(`  ${/^(no such|error|the text)/.test(result) ? red('✗') : green('✓')} ${call.kind} ${call.arg} ${dim(head.slice(0, 70))}`);
-    results.push(`Result of ${call.kind} ${call.arg}:\n${outbound(result)}`);
+  showDiff();
+  if (APPLY && overlay.size) {
+    for (const [abs, text] of overlay) {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, text);
+    }
+    console.log(green(`\nwrote ${overlay.size} file(s) to disk`));
+  } else if (overlay.size) {
+    console.log(dim('\ndry run — nothing written. re-run with --apply'));
   }
-
-  const stillLooking = work.some((c) => c.kind === 'list' || c.kind === 'read');
-  if (done && !stillLooking) { console.log(green(`\n✓ ${done.arg || prose(reply) || 'done'}`)); break; }
-  if (done) console.log(dim('  (ignoring DONE — it came before the results it asked for)'));
-  next = `${results.join('\n\n')}\n\n${REMINDER}`;
-  if (step === MAX_STEPS) console.log(red('\nreached the step limit'));
 }
 
-showDiff();
+await runTask(task, { first: true });
 
-if (APPLY && overlay.size) {
-  for (const [abs, text] of overlay) {
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, text);
+if (WATCH) {
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  console.log(dim('\n— watching. type another task, or press Ctrl+C to stop —'));
+  rl.setPrompt(bold('\ntask> '));
+  rl.prompt();
+  // The async iterator ends cleanly on EOF (piped input) or Ctrl+D.
+  for await (const raw of rl) {
+    const line = raw.trim();
+    if (line === 'exit' || line === 'quit') break;
+    if (line) await runTask(line, { first: false });
+    rl.prompt();
   }
-  console.log(green(`\nwrote ${overlay.size} file(s) to disk`));
-} else if (overlay.size) {
-  console.log(dim('\ndry run — nothing written. re-run with --apply'));
+  rl.close();
+  console.log(dim('\ndone.'));
 }
