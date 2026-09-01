@@ -258,14 +258,14 @@ Implement all files now using CREATE <filepath> ... END blocks.`;
     }
   }
 
-  console.log(`\n${green('✔ Developer finished:')} ${fileCount} files staged.\n`);
+  console.log(`\n${green('✓ Developer finished:')} ${fileCount} files staged.\n`);
 
   /* ------------------- PHASE 3 & 4: QA & AUTO-FIX LOOP ------------------- */
   let currentRound = 1;
   let isApproved = false;
 
   while (currentRound <= MAX_ROUNDS && !isApproved) {
-    const roundText = `🔍 [Phase 3] QA & Reviewer (Round ${currentRound}/${MAX_ROUNDS})`;
+    const roundText = `[Phase 3] QA & Reviewer (Round ${currentRound}/${MAX_ROUNDS})`;
     console.log(`${bold(yellow(roundText))} inspecting code...`);
 
     const currentFiles = listWorkspaceTree();
@@ -297,17 +297,17 @@ Please review and provide STATUS: APPROVED or STATUS: NEEDS_FIX with recommendat
     const qaResult = await callModel(REVIEWER_MODEL, [{ role: 'user', content: qaPrompt }], reviewerSystem);
 
     if (qaResult.includes('STATUS: APPROVED')) {
-      console.log(`\n${green('🎉 QA Status: APPROVED!')}`);
+      console.log(`\n${green('✓ QA Status: APPROVED')}`);
       console.log(dim(qaResult.replace('STATUS: APPROVED', '').trim()));
       isApproved = true;
       break;
     }
 
-    console.log(`\n${yellow('⚠️ QA Status: ISSUES DETECTED. Triggering Auto-Fix...')}`);
+    console.log(`\n${yellow('[!] QA Status: Issues detected. Triggering auto-fix...')}`);
     console.log(dim(qaResult.slice(0, 300)) + '...\n');
 
     // Auto-fix loop
-    console.log(`${bold(cyan('🛠️ Developer applying QA fixes...'))}`);
+    console.log(`${bold(cyan('Developer applying QA fixes...'))}`);
     const fixPrompt = `User Requirement: "${task}"
 QA Review Feedback:
 ${qaResult}
@@ -325,7 +325,7 @@ Please apply all required fixes and output the corrected files using CREATE <fil
       const filename = fixMatch[1].trim();
       const content = fixMatch[2];
       writeWorkspace(filename, content);
-      console.log(`  ${yellow('↻')} Updated ${bold(filename)}`);
+      console.log(`  ${yellow('→')} Updated ${bold(filename)}`);
       fixCount++;
     }
 
@@ -333,20 +333,20 @@ Please apply all required fixes and output the corrected files using CREATE <fil
   }
 
   /* --------------------------- FINAL SUMMARY --------------------------- */
-  console.log(`\n${bold(cyan('══════════════════════════════════════════════════════════════'))}`);
-  console.log(`  ${bold(green('✨ Team Multi-Agent Workflow Completed Successfully!'))}`);
+  console.log(`\n${bold(cyan('──────────────────────────────────────────────────────────────'))}`);
+  console.log(`  ${bold(green('Team Multi-Agent Workflow Completed Successfully.'))}`);
   console.log(`  ${dim('Created Files:')}  ${[...createdFiles].join(', ') || '(none)'}`);
   console.log(`  ${dim('Modified Files:')} ${[...modifiedFiles].join(', ') || '(none)'}`);
   if (!APPLY) {
-    console.log(`\n  ${yellow('💡 Note: This was a dry-run.')} Run with ${bold('--apply')} to save changes directly to disk:`);
+    console.log(`\n  ${yellow('Note: This was a dry-run.')} Run with ${bold('--apply')} to save changes directly to disk:`);
     console.log(`     ${cyan(`bun run team -- "${task}" --apply`)}`);
   } else {
-    console.log(`\n  ${green('✔ All files written directly to workspace disk.')}`);
+    console.log(`\n  ${green('✓ All files written directly to workspace disk.')}`);
   }
 
   /* --------------------------- GIT COMMIT & PUSH --------------------------- */
   if (APPLY && (DO_COMMIT || DO_PUSH)) {
-    console.log(`\n${bold(cyan('📦 [Phase 5] Git Automation (Stage, Commit & Push)...'))}`);
+    console.log(`\n${bold(cyan('[Phase 5] Git Automation (Stage, Commit & Push)...'))}`);
     try {
       // Check if git is available
       try {
@@ -359,7 +359,7 @@ Please apply all required fixes and output the corrected files using CREATE <fil
       const allChanged = [...new Set([...createdFiles, ...modifiedFiles])];
       if (allChanged.length > 0) {
         execFileSync('git', ['add', ...allChanged], { cwd: ROOT });
-        console.log(`  ${green('✔')} Staged ${bold(allChanged.length)} files for commit`);
+        console.log(`  ${green('✓')} Staged ${bold(allChanged.length)} files for commit`);
 
         // Generate commit message
         let finalMessage = COMMIT_MSG;

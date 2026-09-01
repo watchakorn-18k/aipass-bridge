@@ -190,22 +190,22 @@ function setupContextMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: 'aipass_summarize',
-      title: '✨ AIPass: Summarize this page',
+      title: 'AIPass: Summarize this page',
       contexts: ['page', 'selection'],
     });
     chrome.contextMenus.create({
       id: 'aipass_extract_code',
-      title: '💻 AIPass: Extract Code & Data',
+      title: 'AIPass: Extract Code & Data',
       contexts: ['page', 'selection'],
     });
     chrome.contextMenus.create({
       id: 'aipass_convert_api',
-      title: '⚡ AIPass: Convert page to REST API / JSON',
+      title: 'AIPass: Convert page to REST API / JSON',
       contexts: ['page', 'selection'],
     });
     chrome.contextMenus.create({
       id: 'aipass_explain',
-      title: '🔍 AIPass: Explain selection',
+      title: 'AIPass: Explain selection',
       contexts: ['selection'],
     });
   });
