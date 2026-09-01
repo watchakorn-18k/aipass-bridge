@@ -846,6 +846,197 @@ async function chatCompletions(req, res) {
   });
 }
 
+/* ------------------------------------------------------- anthropic messages */
+
+async function anthropicMessages(req, res) {
+  let payload;
+  try { payload = JSON.parse(await readBody(req)); }
+  catch { return oaiError(res, 400, 'invalid JSON body'); }
+
+  let model = String(payload.model ?? defaultModel).replace(/^aipass\//, '');
+  if (model.startsWith('claude-3-7-sonnet') || model.startsWith('claude-3-5-sonnet') || model.startsWith('claude-sonnet')) {
+    model = 'claude-sonnet-5@default';
+  } else if (model.startsWith('claude-3-opus') || model.startsWith('claude-opus')) {
+    model = 'claude-opus-5@azure';
+  }
+
+  const tools = (payload.tools ?? []).map((t) => ({
+    name: t.name,
+    description: t.description || '',
+    parameters: t.input_schema || { type: 'object', properties: {} },
+  }));
+
+  const normalizedMessages = [];
+  if (payload.system) {
+    const sys = typeof payload.system === 'string' ? payload.system : (payload.system ?? []).map((s) => s.text || '').join('\n');
+    normalizedMessages.push({ role: 'system', content: sys });
+  }
+
+  for (const m of payload.messages ?? []) {
+    if (typeof m.content === 'string') {
+      normalizedMessages.push({ role: m.role, content: m.content });
+    } else if (Array.isArray(m.content)) {
+      const textParts = [];
+      for (const block of m.content) {
+        if (block.type === 'text') textParts.push(block.text);
+        else if (block.type === 'tool_use') {
+          textParts.push(`[Invoked Tool: ${block.name}(${JSON.stringify(block.input)})]`);
+        } else if (block.type === 'tool_result') {
+          const content = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+          normalizedMessages.push({ role: 'tool', tool_call_id: block.tool_use_id, content });
+        }
+      }
+      if (textParts.length) {
+        normalizedMessages.push({ role: m.role, content: textParts.join('\n') });
+      }
+    }
+  }
+
+  const text = tools.length
+    ? buildUserPrompt(normalizedMessages, tools, null, 'auto')
+    : lastUserText(normalizedMessages);
+
+  if (!text) return oaiError(res, 400, 'no user message');
+
+  const id = `msg_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  log(`anthropic -> ${model} (${Buffer.byteLength(text)} bytes)${tools.length ? ' [tools enabled]' : ''}`);
+
+  if (payload.stream) {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+      'access-control-allow-origin': '*',
+    });
+
+    const sse = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    sse('message_start', {
+      type: 'message_start',
+      message: {
+        id, type: 'message', role: 'assistant', model,
+        content: [], stop_reason: null, stop_sequence: null,
+        usage: { input_tokens: Math.ceil(text.length / 4), output_tokens: 1 },
+      },
+    });
+
+    let fullOutput = '';
+    let hasSentBlockStart = false;
+
+    const job = startChat({
+      modelId: model, text,
+      onDelta: (part) => {
+        if (part.kind === 'status' || part.kind === 'reasoning') return;
+        fullOutput += part.text;
+        if (!tools.length) {
+          if (!hasSentBlockStart) {
+            sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+            hasSentBlockStart = true;
+          }
+          sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: part.text } });
+        }
+      },
+      onDone: () => {
+        if (tools.length) {
+          const toolResult = parseToolCallsFromOutput(fullOutput, tools, null);
+          if (toolResult && toolResult.tool_calls.length) {
+            const first = toolResult.tool_calls[0];
+            let parsedArgs = {};
+            try { parsedArgs = JSON.parse(first.function.arguments || '{}'); } catch {}
+            sse('content_block_start', {
+              type: 'content_block_start', index: 0,
+              content_block: { type: 'tool_use', id: `toolu_${first.id.replace(/^call_/, '')}`, name: first.function.name, input: {} },
+            });
+            sse('content_block_delta', {
+              type: 'content_block_delta', index: 0,
+              delta: { type: 'input_json_delta', partial_json: JSON.stringify(parsedArgs) },
+            });
+            sse('content_block_stop', { type: 'content_block_stop', index: 0 });
+            sse('message_delta', {
+              type: 'message_delta',
+              delta: { stop_reason: 'tool_use', stop_sequence: null },
+              usage: { output_tokens: Math.ceil(fullOutput.length / 4) },
+            });
+          } else {
+            sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+            sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: fullOutput } });
+            sse('content_block_stop', { type: 'content_block_stop', index: 0 });
+            sse('message_delta', {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: Math.ceil(fullOutput.length / 4) },
+            });
+          }
+        } else {
+          if (hasSentBlockStart) sse('content_block_stop', { type: 'content_block_stop', index: 0 });
+          sse('message_delta', {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn', stop_sequence: null },
+            usage: { output_tokens: Math.ceil(fullOutput.length / 4) },
+          });
+        }
+        sse('message_stop', { type: 'message_stop' });
+        res.end();
+      },
+      onError: (message) => {
+        sse('error', { type: 'error', error: { type: 'api_error', message } });
+        res.end();
+      },
+    });
+    res.on('close', () => job.abort());
+    return;
+  }
+
+  let out = '';
+  await new Promise((resolve) => {
+    const job = startChat({
+      modelId: model, text,
+      onDelta: (p) => { if (p.kind !== 'status' && p.kind !== 'reasoning') out += p.text; },
+      onDone: () => {
+        const toolResult = tools.length ? parseToolCallsFromOutput(out, tools, null) : null;
+        if (toolResult && toolResult.tool_calls.length) {
+          const first = toolResult.tool_calls[0];
+          let parsedArgs = {};
+          try { parsedArgs = JSON.parse(first.function.arguments || '{}'); } catch {}
+          json(res, 200, {
+            id, type: 'message', role: 'assistant', model,
+            content: [
+              ...(toolResult.textWithoutTool ? [{ type: 'text', text: toolResult.textWithoutTool }] : []),
+              {
+                type: 'tool_use',
+                id: `toolu_${first.id.replace(/^call_/, '')}`,
+                name: first.function.name,
+                input: parsedArgs,
+              },
+            ],
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            usage: {
+              input_tokens: Math.ceil(text.length / 4),
+              output_tokens: Math.ceil(out.length / 4),
+            },
+          });
+        } else {
+          json(res, 200, {
+            id, type: 'message', role: 'assistant', model,
+            content: [{ type: 'text', text: out }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: {
+              input_tokens: Math.ceil(text.length / 4),
+              output_tokens: Math.ceil(out.length / 4),
+            },
+          });
+        }
+        resolve();
+      },
+      onError: (message) => { oaiError(res, 502, message, 'upstream_error'); resolve(); },
+    });
+    res.on('close', () => { job.abort(); resolve(); });
+  });
+}
+
 /* -------------------------------------------------------- extension channel */
 
 function extEvents(req, res) {
@@ -912,6 +1103,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (path === '/v1/chat/completions' && req.method === 'POST') return await chatCompletions(req, res);
+    if ((path === '/v1/messages' || path === '/messages') && req.method === 'POST') return await anthropicMessages(req, res);
 
     if (path === '/v1/models') {
       const models = await listModels({ force: url.searchParams.get('refresh') === '1' });

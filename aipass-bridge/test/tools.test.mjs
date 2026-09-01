@@ -85,3 +85,36 @@ test('emulates function calling in streaming response', async () => {
   assert.equal(args.location, 'Tokyo');
   await ext.disconnect();
 });
+
+test('supports Anthropic Messages API (/v1/messages) with tool use', async () => {
+  const ext = await new FakeExtension(bridge.base, {
+    onChat: async (job, e) => {
+      assert.match(job.text, /read_file/);
+      await e.text('```json\n{\n  "name": "read_file",\n  "arguments": {"path": "package.json"}\n}\n```');
+      await e.done();
+    },
+  }).connect();
+
+  const res = await fetch(`${bridge.base}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-3-7-sonnet',
+      messages: [{ role: 'user', content: 'Read package.json' }],
+      tools: [{
+        name: 'read_file',
+        description: 'Read file from disk',
+        input_schema: { type: 'object', properties: { path: { type: 'string' } } },
+      }],
+    }),
+  });
+
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.type, 'message');
+  assert.equal(data.stop_reason, 'tool_use');
+  assert.equal(data.content[0].type, 'tool_use');
+  assert.equal(data.content[0].name, 'read_file');
+  assert.equal(data.content[0].input.path, 'package.json');
+  await ext.disconnect();
+});
