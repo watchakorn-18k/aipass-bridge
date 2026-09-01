@@ -1160,8 +1160,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, directMode: Boolean(getCookie()) });
     }
 
-    if ((path === '/' || path === '/dashboard' || path === '/chat') && req.method === 'GET') {
+    if ((path === '/' || path === '/dashboard' || path === '/chat') && (req.method === 'GET' || req.method === 'HEAD')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      if (req.method === 'HEAD') return res.end();
       res.end(renderDashboardHtml());
       return;
     }
