@@ -46,4 +46,6 @@ aipass*.md
 *.har
 .cookie
 **/.cookie
+test_ai/
+
 
